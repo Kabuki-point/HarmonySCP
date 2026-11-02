@@ -1,0 +1,39 @@
+/node_modules
+/oh_modules
+/local.properties
+/.idea
+**/build
+/.hvigor
+.cxx
+/.clangd
+/.clang-format
+/.clang-tidy
+**/.test
+/.appanalyzer
+
+# Local caches and editor files
+.DS_Store
+**/node_modules/
+**/oh_modules/
+**/.hvigor/
+**/.cxx/
+.vscode/
+*.log
+
+# Local credentials and signing materials
+.env
+.env.*
+!.env.example
+/sign/
+/signing/
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.p7b
+*.cer
+*.csr
+*.pem
+*.key
+
+# Keep dependency lockfiles and required third-party .a/.so libraries tracked.
