@@ -16,4 +16,5 @@
 - [2026-11-02 / 01：实现 SSH 登录 MVP](changes/2026-11-02-01-ssh-mvp.md)
 - [2026-11-02 / 02：排查预览器登录与修复重试输入](changes/2026-11-02-02-preview-and-retry.md)
 - [2026-11-02 / 03：整理文档规范并准备仓库交付](changes/2026-11-02-03-documentation-layout.md)
+- [2026-11-02 / 04：更新约束描述与指定分支交付](changes/2026-11-02-04-remote-handoff.md)
 - [新改动记录模板](changes/TEMPLATE.md)
