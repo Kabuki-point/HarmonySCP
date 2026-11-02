@@ -9,11 +9,12 @@ HarmonyOS 手机端 SSH 客户端课程项目。当前仓库为 DevEco Studio Na
 - [x] 创建 DevEco Studio Native C++ 手机工程，检查 Stage、页面、Ability、资源、NAPI 注册和类型声明。
 - [x] 阅读本地 CrossShellNext 和 FtpNextClient 实际源码，确认主参考项目连接流程耦合终端/SFTP，主机密钥验证需补充。
 - [x] 在独立临时目录验证参考项目 libssh2.a + libcrypto.a + z 可由 Native SDK 链接成 ARM64 .so；未将其导入本工程。
-- [x] 初始化 Git，创建私有 GitHub 仓库并推送 main：https://github.com/mullen0612/Har_SCP。
+- [x] 初始化 Git，并迁移至团队 GitHub 仓库 main：https://github.com/Kabuki-point/HarmonySCP。
 - [x] 补充忽略规则、PR 模板和工程检查记录；不提交本机路径、缓存、构建产物和签名材料。
 - [x] 使用 DevEco 自带 Hvigor 执行 entry 模块 assembleHap，结果 BUILD SUCCESSFUL。
 - [x] 检查未签名 HAP，含 arm64-v8a、x86_64 的 libentry.so 和 libc++_shared.so。
-- [ ] 邀请团队协作者，统一 SDK、模拟器镜像和 ABI。
+- [x] 已加入团队成员维护的仓库，本地 origin 切换为 Kabuki-point/HarmonySCP。
+- [ ] 团队统一 SDK、模拟器镜像和 ABI。
 - [ ] 在手机模拟器运行模板，确认 ArkTS 调用 Native 示例成功。
 - [ ] 整理第三方库来源、版本、安全补丁、许可证及目标 ABI。
 - [ ] 实现 SSH 连接、主机身份验证、密码认证、状态机、取消和断开。
@@ -78,7 +79,14 @@ HarmonyOS 手机端 SSH 客户端课程项目。当前仓库为 DevEco Studio Na
 
 ## 下一步
 
-1. 团队成员接受仓库邀请并克隆，确认工程可以同步与构建。
+1. 团队成员克隆 https://github.com/Kabuki-point/HarmonySCP.git，确认工程可以同步与构建。
 2. 负责运行的成员创建满足 API 要求的 Phone 模拟器，记录镜像版本、ABI 和模板运行结果。
 3. 统一 SSH 状态、错误码、首次指纹确认和 NAPI 接口，再分配页面与原生模块任务。
 4. 引入已核实的原生依赖并实现第一阶段功能；网络功能加入时声明 INTERNET 权限。
+
+## 仓库迁移（2026-11-02）
+
+- 团队统一仓库：https://github.com/Kabuki-point/HarmonySCP（当前为公开仓库）。
+- 将初始化工程及原有提交历史推送至团队仓库 main，本地路径保持不变。
+- README 保持删除，项目进度继续写入本文件。
+- 旧个人仓库的网页删除操作尚待最后确认。
