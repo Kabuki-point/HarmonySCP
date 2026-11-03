@@ -1,3 +1,5 @@
+> 以下为模板阶段的历史检查。当前 MVP 实现与验证见 [mvp-validation.md](mvp-validation.md)。
+
 # 工程基线检查（2026-11-02）
 
 - ArkTS Stage / Phone 配置、EntryAbility、页面、页面路由及资源存在。

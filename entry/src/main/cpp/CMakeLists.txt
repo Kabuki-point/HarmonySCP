@@ -1,15 +1,15 @@
-# the minimum version of CMake.
 cmake_minimum_required(VERSION 3.5.0)
-project(Har_SCP)
-
-set(NATIVERENDER_ROOT_PATH ${CMAKE_CURRENT_SOURCE_DIR})
-
+project(HarmonySCP)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(DEFINED PACKAGE_FIND_FILE)
     include(${PACKAGE_FIND_FILE})
 endif()
-
-include_directories(${NATIVERENDER_ROOT_PATH}
-                    ${NATIVERENDER_ROOT_PATH}/include)
-
-add_library(entry SHARED napi_init.cpp)
-target_link_libraries(entry PUBLIC libace_napi.z.so)
+if(NOT OHOS_ARCH STREQUAL "arm64-v8a")
+    message(FATAL_ERROR "MVP dependencies support arm64-v8a only")
+endif()
+set(SSH_LIBS ${CMAKE_CURRENT_SOURCE_DIR}/../../../libs)
+add_library(entry SHARED napi_init.cpp ssh_client.cpp)
+target_compile_definitions(entry PRIVATE HARMONYSCP_HILOG)
+target_include_directories(entry PRIVATE ${SSH_LIBS}/include)
+target_link_libraries(entry PUBLIC libace_napi.z.so libhilog_ndk.z.so ${SSH_LIBS}/arm64-v8a/libssh2.a ${SSH_LIBS}/arm64-v8a/libcrypto.a z)
