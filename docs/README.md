@@ -10,6 +10,7 @@
 - [双 ABI 原生依赖重建与安装检查](validation/native-dependencies.md)
 - [x86_64 模拟器 SSH 功能验证](validation/emulator-ssh-validation.md)
 - [SSH GUI 脚本运行与 uv 环境](validation/ssh-gui-testing.md)
+- [SFTP 单文件传输验证](validation/sftp-validation.md)
 - [第三方依赖来源与许可证](../third_party/NOTICE.md)
 
 ## Agent 改动记录
@@ -23,4 +24,8 @@
 - [2026-11-03 / 01：增加 x86_64 模拟器构建](changes/2026-11-03-01-x86_64-emulator.md)
 - [2026-11-03 / 02：在模拟器验证 SSH 连接功能](changes/2026-11-03-02-emulator-ssh-test.md)
 - [2026-11-03 / 03：保留 SSH GUI 测试脚本并使用 uv](changes/2026-11-03-03-ssh-gui-uv.md)
+- [2026-11-04 / 01：指定桌面工作区](changes/2026-11-04-01-desktop-workspace.md)
+- [2026-11-04 / 02：实现 SFTP 单文件传输](changes/2026-11-04-02-sftp-single-file.md)
+- [2026-11-04 / 03：功能分支命名与 DevEco 检查](changes/2026-11-04-03-feature-branch-and-deveco-check.md)
+- [2026-11-04 / 04：模拟器验证 SFTP 单文件往返](changes/2026-11-04-04-sftp-emulator-round-trip.md)
 - [新改动记录模板](changes/TEMPLATE.md)

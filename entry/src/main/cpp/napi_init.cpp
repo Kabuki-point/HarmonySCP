@@ -1,5 +1,7 @@
 #include "napi/native_api.h"
 #include "ssh_client.h"
+#include <cmath>
+#include <limits>
 #include <vector>
 
 static SshClient client;
@@ -13,6 +15,17 @@ static bool String(napi_env env, napi_value value, std::string &out, size_t limi
     return true;
 }
 static napi_value Bool(napi_env env, bool value) { napi_value result; napi_get_boolean(env, value, &result); return result; }
+static void SetString(napi_env env, napi_value object, const char *key, const std::string &text) {
+    napi_value value;
+    napi_create_string_utf8(env, text.c_str(), text.size(), &value);
+    napi_set_named_property(env, object, key, value);
+}
+
+static void SetNumber(napi_env env, napi_value object, const char *key, double number) {
+    napi_value value;
+    napi_create_double(env, number, &value);
+    napi_set_named_property(env, object, key, value);
+}
 static napi_value Connect(napi_env env, napi_callback_info info) {
     size_t count = 2; napi_value args[2]; napi_get_cb_info(env, info, &count, args, nullptr, nullptr);
     std::string host; double port = 0;
@@ -31,17 +44,58 @@ static napi_value Authenticate(napi_env env, napi_callback_info info) {
 static napi_value Disconnect(napi_env env, napi_callback_info info) { client.Disconnect(); napi_value value; napi_get_undefined(env, &value); return value; }
 static napi_value Status(napi_env env, napi_callback_info info) {
     auto status = client.Status(); napi_value result; napi_create_object(env, &result);
-    auto set = [&](const char *key, const std::string &text) { napi_value value; napi_create_string_utf8(env, text.c_str(), text.size(), &value); napi_set_named_property(env, result, key, value); };
     napi_value available; napi_get_boolean(env, true, &available);
     napi_set_named_property(env, result, "nativeAvailable", available);
-    set("state", status.state); set("message", status.message); set("fingerprint", status.fingerprint); return result;
+    SetString(env, result, "state", status.state);
+    SetString(env, result, "message", status.message);
+    SetString(env, result, "fingerprint", status.fingerprint);
+    SetNumber(env, result, "connectionId", status.connectionId);
+    return result;
+}
+
+static napi_value StartTransfer(napi_env env, napi_callback_info info) {
+    size_t count = 4;
+    napi_value args[4];
+    napi_get_cb_info(env, info, &count, args, nullptr, nullptr);
+    bool upload;
+    double fd, connectionId;
+    std::string path;
+    if (count != 4 || napi_get_value_bool(env, args[0], &upload) != napi_ok ||
+        napi_get_value_double(env, args[1], &fd) != napi_ok ||
+        !(fd >= 0 && fd <= std::numeric_limits<int>::max()) || fd != std::trunc(fd) ||
+        !String(env, args[2], path, 4096) ||
+        napi_get_value_double(env, args[3], &connectionId) != napi_ok ||
+        !(connectionId >= 0 && connectionId <= std::numeric_limits<uint32_t>::max()) ||
+        connectionId != std::trunc(connectionId)) return Bool(env, false);
+    return Bool(env, client.StartTransfer(upload, static_cast<int>(fd), path, static_cast<uint32_t>(connectionId)));
+}
+
+static napi_value CancelTransfer(napi_env env, napi_callback_info info) {
+    client.CancelTransfer();
+    napi_value value;
+    napi_get_undefined(env, &value);
+    return value;
+}
+
+static napi_value GetTransferStatus(napi_env env, napi_callback_info info) {
+    const auto status = client.GetTransferStatus();
+    napi_value result;
+    napi_create_object(env, &result);
+    SetString(env, result, "state", status.state);
+    SetString(env, result, "message", status.message);
+    SetNumber(env, result, "bytes", status.bytes);
+    SetNumber(env, result, "total", status.total);
+    return result;
 }
 static napi_value Init(napi_env env, napi_value exports) {
     napi_property_descriptor desc[] = {
         {"connect", nullptr, Connect, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"authenticate", nullptr, Authenticate, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"disconnect", nullptr, Disconnect, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"status", nullptr, Status, nullptr, nullptr, nullptr, napi_default, nullptr}
+        {"status", nullptr, Status, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"startTransfer", nullptr, StartTransfer, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"cancelTransfer", nullptr, CancelTransfer, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"transferStatus", nullptr, GetTransferStatus, nullptr, nullptr, nullptr, napi_default, nullptr}
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc); return exports;
 }

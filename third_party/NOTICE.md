@@ -40,3 +40,7 @@ OpenSSL 哈希已对照官方同名 `.sha256` 文件；libssh2 哈希为本次�
 OpenSSL 3.5.4 为 Apache-2.0，完整文本来自源码包 `LICENSE.txt`，见 [OpenSSL-3.5-LICENSE.txt](licenses/OpenSSL-3.5-LICENSE.txt)；ARM64 的旧 OpenSSL 许可证继续保留。libssh2 许可证同上。
 
 重建脚本与参数见 [原生构建说明](../docs/validation/native-dependencies.md)。脚本面向 Linux/macOS SDK；不同主机、归档工具和构建路径可能产生不同二进制哈希，尚未验证逐字节可复现性。两种 ABI 的 OpenSSL 主版本不同，不跨 ABI 混用依赖；算法兼容性与真实 SSH 登录仍需分别验收。
+
+## SFTP 头文件（2026-11-04）
+
+`entry/libs/include/libssh2_sftp.h` 直接取自上表中已校验 SHA256 的官方 libssh2 1.11.1 源码包。文件 SHA256 为 `b5d864f19af69521278ed953b20b76a32cfdc08014da81d38f59964e7e2e2575`，保留原 BSD-3-Clause 许可证声明。此头文件共用于两种 ABI；`nm` 确认两份现有 `libssh2.a` 均提供所需的 SFTP 符号。静态库未替换，ARM64 归档的确切源码版本、补丁和构建过程仍待核实。

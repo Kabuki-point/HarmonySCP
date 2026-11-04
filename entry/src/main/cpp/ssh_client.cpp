@@ -68,7 +68,7 @@ bool SshClient::Connect(const std::string &host, int port) {
     if (worker_.joinable()) worker_.join();
     cancelled_ = false;
     { std::lock_guard<std::mutex> lock(mutex_);
-      status_ = {"connecting", "正在连接服务器…", ""}; authenticate_ = false; Erase(password_); }
+      status_ = {"connecting", "正在连接服务器…", "", status_.connectionId + 1}; authenticate_ = false; Erase(password_); }
     LogState("connecting");
     worker_ = std::thread(&SshClient::Run, this, host, port);
     return true;
@@ -81,6 +81,34 @@ bool SshClient::Authenticate(const std::string &user, const std::string &passwor
     user_ = user; password_ = password; authenticate_ = true; return true;
 }
 void SshClient::Disconnect() { if (running_) LogState("cancelling"); cancelled_ = true; }
+bool SshClient::StartTransfer(bool upload, int fd, const std::string &remotePath, uint32_t connectionId) {
+    if (remotePath.empty() || remotePath.front() != '/' || remotePath.back() == '/' ||
+        remotePath.size() > 4096 || remotePath.find('\0') != std::string::npos) return false;
+    const auto name = remotePath.substr(remotePath.rfind('/') + 1);
+    if (name == "." || name == "..") return false;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (cancelled_ || status_.state != "connected" || status_.connectionId != connectionId ||
+        transferStatus_.state == "running") return false;
+    auto request = std::make_unique<TransferRequest>(upload, remotePath);
+    request->fd = fcntl(fd, F_DUPFD_CLOEXEC, 0);
+    if (request->fd < 0) return false;
+    transferCancelled_ = false;
+    transferStatus_ = {"running", upload ? "正在上传…" : "正在下载…"};
+    pendingTransfer_ = std::move(request);
+    return true;
+}
+
+void SshClient::CancelTransfer() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (transferStatus_.state == "running") transferCancelled_ = true;
+}
+
+TransferStatus SshClient::GetTransferStatus() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return transferStatus_;
+}
+
 void SshClient::Run(std::string host, int port) {
     int fd = -1; LIBSSH2_SESSION *session = nullptr;
     std::string password;
@@ -142,7 +170,8 @@ void SshClient::Run(std::string host, int port) {
         const char *hash = libssh2_hostkey_hash(session, LIBSSH2_HOSTKEY_HASH_SHA256);
         if (!hash) throw std::runtime_error("无法获取服务器 SHA256 指纹，已停止连接");
         { std::lock_guard<std::mutex> lock(mutex_);
-          status_ = {"verify", "请通过可信渠道核对服务器指纹，再确认登录", "SHA256:" + Base64(reinterpret_cast<const unsigned char *>(hash), 32)}; }
+          status_ = {"verify", "请通过可信渠道核对服务器指纹，再确认登录",
+              "SHA256:" + Base64(reinterpret_cast<const unsigned char *>(hash), 32), status_.connectionId}; }
         LogState("verify");
         deadline = Clock::now() + std::chrono::seconds(120);
         std::string user;
@@ -161,9 +190,34 @@ void SshClient::Run(std::string host, int port) {
         }
         if (cancelled_) throw std::runtime_error("cancelled");
         Set("connected", "SSH 登录成功，连接已建立");
-        // No channels in phase one. Probe transport and send SSH keepalives.
         libssh2_keepalive_config(session, 1, 10);
         while (!cancelled_) {
+            std::unique_ptr<TransferRequest> request;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                request = std::move(pendingTransfer_);
+            }
+            if (request) {
+                auto outcome = RunSftpTransfer(session, fd, *request,
+                    [&]() { return cancelled_ || transferCancelled_; },
+                    [&](uint64_t bytes, uint64_t total) {
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        transferStatus_.bytes = bytes;
+                        transferStatus_.total = total;
+                    });
+                request.reset();
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    if (!outcome.sessionUsable && !cancelled_) {
+                        status_.state = "error";
+                        status_.message = "文件传输期间连接中断，请重新连接";
+                    }
+                    transferStatus_.state = outcome.state;
+                    transferStatus_.message = outcome.message;
+                }
+                if (!outcome.sessionUsable) break;
+                continue;
+            }
             pollfd p{fd, POLLIN, 0}; poll(&p, 1, 100);
             char byte;
             if (p.revents & (POLLERR | POLLHUP | POLLNVAL)) throw std::runtime_error("服务器连接已断开");
@@ -182,6 +236,11 @@ void SshClient::Run(std::string host, int port) {
     if (session) libssh2_session_free(session);
     if (fd >= 0) close(fd);
     { std::lock_guard<std::mutex> lock(mutex_); Erase(password_); authenticate_ = false;
+      pendingTransfer_.reset();
+      if (transferStatus_.state == "running") {
+          transferStatus_.state = cancelled_ ? "cancelled" : "failed";
+          transferStatus_.message = cancelled_ ? "传输已取消" : "连接已断开，传输未完成";
+      }
       if (cancelled_) { status_.state = "idle"; status_.message = "连接已断开"; } }
     LogState(Status().state);
     running_ = false;

@@ -26,7 +26,8 @@
 
 ```sh
 clang++ -std=c++17 -pthread tests/native/ssh_client_test.cpp \
-  entry/src/main/cpp/ssh_client.cpp -Ientry/src/main/cpp -Ientry/libs/include \
+  entry/src/main/cpp/ssh_client.cpp entry/src/main/cpp/sftp_transfer.cpp \
+  -Ientry/src/main/cpp -Ientry/libs/include \
   /tmp/harmony-libssh2-host/src/libssh2.a \
   -L/opt/homebrew/opt/openssl@3/lib -lcrypto -lz -o /tmp/harmony-ssh-client-test
 .venv/bin/python tests/native/integration.py /tmp/harmony-ssh-client-test

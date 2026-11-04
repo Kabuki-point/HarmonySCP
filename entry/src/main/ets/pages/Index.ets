@@ -1,4 +1,5 @@
 import ssh from 'libentry.so';
+import { SftpPanel } from '../components/SftpPanel';
 
 @Entry
 @Component
@@ -113,7 +114,7 @@ struct Index {
             Text('安全连接，从这里开始').fontSize(12).fontColor('#64748B')
           }.alignItems(HorizontalAlign.Start).margin({ left: 12 })
           Blank()
-          Text('MVP 01').fontSize(10).fontWeight(FontWeight.Bold).fontColor('#2563EB')
+          Text('MVP 02').fontSize(10).fontWeight(FontWeight.Bold).fontColor('#2563EB')
         }.width('100%').margin({ bottom: 28 })
 
         Column({ space: 8 }) {
@@ -178,7 +179,10 @@ struct Index {
               .onClick(() => this.cancel())
           }.padding(22).width('100%').backgroundColor(Color.White).borderRadius(20).margin({ top: 16 })
         }
-        Text('第一阶段 · SSH 登录与连接管理\n支持 IPv4 / IPv6 · 不保存密码 · 指纹确认限时 2 分钟')
+        if (this.nativeAvailable) {
+          SftpPanel({ connected: this.state === 'connected' && !this.cancelling })
+        }
+        Text('SSH 登录与 SFTP 单文件传输\n支持 IPv4 / IPv6 · 不保存密码 · 指纹确认限时 2 分钟')
           .fontSize(11).lineHeight(19).fontColor('#64748B').textAlign(TextAlign.Center).margin({ top: 24, bottom: 24 })
       }.width('100%').padding({ left: 20, right: 20, top: 28 })
     }.width('100%').height('100%').backgroundColor('#F8FAFC').align(Alignment.Top)

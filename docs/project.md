@@ -1,10 +1,10 @@
 # HarmonySCP 项目进度
 
-更新时间：2026-11-03（Asia/Shanghai）。此文件记录项目背景与实际状态；agent 工作约束见根目录 [AGENTS.md](../AGENTS.md)。
+更新时间：2026-11-04（Asia/Shanghai）。此文件记录项目背景与实际状态；agent 工作约束见根目录 [AGENTS.md](../AGENTS.md)。
 
 ## 当前版本
 
-已在原 DevEco Native C++ 模板上实现第一阶段 SSH 客户端 MVP。
+已在原 DevEco Native C++ 模板上实现 SSH 登录与 SFTP 单文件传输。
 
 - ArkUI 中文连接页：IP、端口、用户名、密码、状态与错误提示。
 - Native 后台线程完成 TCP、SSH 握手、SHA256 主机指纹获取、密码认证。
@@ -12,7 +12,9 @@
 - 支持取消、主动断开、失败重连、服务端 TCP 关闭检测；切后台断开。
 - 密码不持久化、不写日志；认证后清除页面密码并覆盖 Native 密码缓冲区。
 - TCP/握手/认证分别最多 15 秒；指纹确认最多 120 秒。
-- 支持 ARM64 真机与 x86_64 模拟器构建、IPv4/IPv6 字面地址；不支持域名、终端、命令执行、SFTP、SCP、文件传输与连接收藏。
+- 支持 ARM64 真机与 x86_64 模拟器构建及 IPv4/IPv6 字面地址。
+- SFTP 单文件上传和下载复用已认证的 SSH 会话，支持进度与取消。上传拒绝覆盖同名远端文件，下载完成后可通过系统选择器导出。
+- 当前范围不包括域名、终端、命令执行、SCP、远端目录浏览、批量传输、断点续传与连接收藏。
 
 ## 环境与构建
 
@@ -49,7 +51,11 @@ uv --cache-dir .uv-cache pip sync requirements.txt
 4. 从可信渠道取得服务器指纹，例如管理员在服务器执行 `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256`。服务器可能协商其他类型主机密钥，应核对实际对应的密钥。
 5. 指纹一致才确认登录；不一致则拒绝。成功后显示“已安全连接”，可主动断开。
 
+SFTP 服务器需启用 `sftp` 子系统。上传建议在连接前通过“选择上传文件”选好本地文件，登录后填写远端完整路径并点击“上传文件”。下载时填写远端文件路径，点击“下载文件”，完成后再点击“保存下载文件”选择导出位置。操作系统选择器期间如触发切后台，应用会按原有策略断开 SSH。下载缓存可在断开后导出或丢弃。
+
 ## 验证与后续
+
+- 2026-11-04 双 ABI HAP 构建与 macOS 本机 SFTP 集成测试通过。同日在 Mate 90 Pro ARM64 模拟器上连接 Mac OpenSSH，完成单文件下载、系统 Picker 保存和上传，两个方向的 SHA-256 均一致。真机与设备端异常场景待验证。详见 [SFTP 验证](validation/sftp-validation.md)。
 
 - `assembleHap` 已实际通过，HAP 包含 ARM64 libentry.so 与 libc++_shared.so。
 - 2026-11-03 agent 构建双 ABI HAP 通过，包内 ARM64 / x86_64 的 libentry.so 与 libc++_shared.so 架构均正确；x86_64 模拟器安装、启动及进程存活检查通过，详见 [构建记录](changes/2026-11-03-01-x86_64-emulator.md)。
