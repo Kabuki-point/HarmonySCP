@@ -1,5 +1,7 @@
 # MVP 验证记录（2026-11-02）
 
+本页保留当时验证事实。2026-11-03 新增的实际 x86_64 / API 26 模拟器 SSH UI 验证见 [后续验证记录](emulator-ssh-validation.md)，不据此将 ARM64 真机或完整设备清单标为通过。
+
 ## 实际完成
 
 - DevEco 自带 OHPM 同步、Hvigor assembleHap 成功。未配置签名。
@@ -18,7 +20,7 @@
 
 不需要真实服务器账户。测试服务器只监听 loopback，动态端口和随机 RSA 密钥；合成测试账号不用于其他服务。
 
-1. 创建临时 Python venv，安装 `paramiko==5.1.0`。
+1. 使用根目录 `requirements.txt` 和 uv 创建/同步 `.venv`，命令见 [Python 测试环境](ssh-gui-testing.md)。
 2. 下载官方 libssh2 1.11.1，使用 CMake 和本机 OpenSSL 构建静态库。
 3. 编译测试程序（按本机库位置调整最后几个参数）：
 
@@ -27,7 +29,7 @@ clang++ -std=c++17 -pthread tests/native/ssh_client_test.cpp \
   entry/src/main/cpp/ssh_client.cpp -Ientry/src/main/cpp -Ientry/libs/include \
   /tmp/harmony-libssh2-host/src/libssh2.a \
   -L/opt/homebrew/opt/openssl@3/lib -lcrypto -lz -o /tmp/harmony-ssh-client-test
-python tests/native/integration.py /tmp/harmony-ssh-client-test
+.venv/bin/python tests/native/integration.py /tmp/harmony-ssh-client-test
 ```
 
 ## 尚未执行的设备验收

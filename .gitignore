@@ -20,6 +20,16 @@
 .vscode/
 *.log
 
+# Python test environments and local uv state (requirements.txt is tracked).
+.venv/
+.uv/
+.uv-cache/
+uv.lock
+uv.toml
+.python-version
+__pycache__/
+*.py[cod]
+
 # Local credentials and signing materials
 .env
 .env.*
@@ -36,4 +46,4 @@
 *.pem
 *.key
 
-# Keep dependency lockfiles and required third-party .a/.so libraries tracked.
+# Keep OHPM lockfiles and required third-party .a/.so libraries tracked.

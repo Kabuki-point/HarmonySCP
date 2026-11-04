@@ -1,6 +1,6 @@
 # HarmonySCP 项目进度
 
-更新时间：2026-11-02（Asia/Shanghai）。此文件记录项目背景与实际状态；agent 工作约束见根目录 [AGENTS.md](../AGENTS.md)。
+更新时间：2026-11-03（Asia/Shanghai）。此文件记录项目背景与实际状态；agent 工作约束见根目录 [AGENTS.md](../AGENTS.md)。
 
 ## 当前版本
 
@@ -12,11 +12,11 @@
 - 支持取消、主动断开、失败重连、服务端 TCP 关闭检测；切后台断开。
 - 密码不持久化、不写日志；认证后清除页面密码并覆盖 Native 密码缓冲区。
 - TCP/握手/认证分别最多 15 秒；指纹确认最多 120 秒。
-- 首版仅 ARM64、IPv4/IPv6 字面地址；不支持域名、终端、命令执行、SFTP、SCP、文件传输与连接收藏。
+- 支持 ARM64 真机与 x86_64 模拟器构建、IPv4/IPv6 字面地址；不支持域名、终端、命令执行、SFTP、SCP、文件传输与连接收藏。
 
 ## 环境与构建
 
-DevEco Studio 26.0.0.865，目标 API 26，最低 API 24，Stage / Phone，C++17，BiSheng，arm64-v8a。
+DevEco Studio 26.0.0.865，目标 API 26，最低 API 24，Stage / Phone，C++17，BiSheng，arm64-v8a / x86_64。
 
 在 DevEco 打开本目录，同步 OHPM 依赖后构建 entry。CLI 示例（macOS 默认安装位置）：
 
@@ -30,11 +30,20 @@ ohpm install
 
 输出 `entry/build/default/outputs/default/entry-default-unsigned.hap`。个人签名在 DevEco 本机配置，不入库。
 
+Python 测试统一使用 uv 管理的本地 `.venv`，依赖版本记录在根目录 `requirements.txt`：
+
+```sh
+uv --cache-dir .uv-cache venv --python 3.12 --no-python-downloads .venv
+uv --cache-dir .uv-cache pip sync requirements.txt
+```
+
+`tests/native/` 为纯 Native 核心集成测试；`tests/ssh-gui/` 为实际模拟器页面与 SSH 服务测试。HDC 配置、运行和清理步骤见 [SSH GUI 与 uv 说明](validation/ssh-gui-testing.md)。虚拟环境、uv 本地管理文件、缓存和测试运行产物不入库。
+
 ## 使用
 
-预览器仅展示界面，不能连接 SSH；请在顶部运行目标选择 ARM64 真机或模拟器。设备排错可在 HiLog 按 tag `HarmonySCP` 筛选状态与错误码。
+预览器仅展示界面，不能连接 SSH；请在顶部运行目标选择 ARM64 真机或 x86_64 / ARM64 模拟器。双 ABI 依赖重建与安装检查见 [原生构建说明](validation/native-dependencies.md)。设备排错可在 HiLog 按 tag `HarmonySCP` 筛选状态与错误码。
 
-1. 用满足 API 24 的 ARM64 手机或模拟器运行；服务器需启用 SSH 密码认证。
+1. 用满足 API 24 的 ARM64 手机或 ARM64 / x86_64 模拟器运行；服务器需启用 SSH 密码认证。
 2. 输入设备可达的服务器 IP、端口、用户名和密码。模拟器的 127.0.0.1 指向模拟器自身。
 3. 点击连接，等待出现指纹卡片（小屏幕向下滚动）。
 4. 从可信渠道取得服务器指纹，例如管理员在服务器执行 `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256`。服务器可能协商其他类型主机密钥，应核对实际对应的密钥。
@@ -43,6 +52,8 @@ ohpm install
 ## 验证与后续
 
 - `assembleHap` 已实际通过，HAP 包含 ARM64 libentry.so 与 libc++_shared.so。
+- 2026-11-03 agent 构建双 ABI HAP 通过，包内 ARM64 / x86_64 的 libentry.so 与 libc++_shared.so 架构均正确；x86_64 模拟器安装、启动及进程存活检查通过，详见 [构建记录](changes/2026-11-03-01-x86_64-emulator.md)。
+- 同日 agent 在 x86_64 / API 26 模拟器上通过实际 UI 完成 7 个 SSH 场景：密码登录及主动断开、拒绝指纹、错误密码、服务端关闭、握手取消、不可用端口、切后台断开与回前台。服务端为 WSL 临时 Paramiko 环回服务，使用合成账号；断线提示存在延迟，ARM64 真机、系统 OpenSSH 与完整设备验收仍未完成，详见 [模拟器验证](validation/emulator-ssh-validation.md)。
 - 原生连接核心在 macOS + 同版本 libssh2 1.11.1（本机构建、OpenSSL 3 后端）通过 6 个真实本机 SSH 集成场景。
 - agent 未执行设备端 Hypium 测试；本机测试不等同于验证打包的 ARM64 二进制。
 - 2026-11-02 用户反馈“我验证了没问题”。设备型号、镜像版本和逐项测试结果未提供，未据此将完整设备验收清单标为通过。
