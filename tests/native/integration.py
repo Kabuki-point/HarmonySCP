@@ -4,8 +4,10 @@ Test credentials below are synthetic and only accepted on loopback.
 """
 import base64
 import hashlib
+import errno
 import logging
 import os
+import posixpath
 from pathlib import Path
 import socket
 import subprocess
@@ -50,13 +52,48 @@ class SlowFile(paramiko.SFTPHandle):
 class SftpFixture(paramiko.SFTPServerInterface):
     def __init__(self, server, root):
         super().__init__(server)
-        self.root = root
+        self.root = root.resolve()
+
+    def canonicalize(self, path):
+        return posixpath.normpath(path if path.startswith('/') else '/work/' + path)
 
     def local(self, path):
-        name = path.removeprefix('/')
-        if not name or '/' in name or name in ('.', '..'):
-            raise PermissionError(13, 'Only fixture files are accessible')
-        return self.root / name
+        if '..' in path.split('/') or path.startswith('/denied'):
+            raise PermissionError(errno.EACCES, 'Path is outside the test fixture')
+        local = self.root / path.lstrip('/')
+        if not local.parent.resolve().is_relative_to(self.root) and local != self.root:
+            raise PermissionError(errno.EACCES, 'Path is outside the test fixture')
+        return local
+
+    def list_folder(self, path):
+        try:
+            result = []
+            for item in self.local(path).iterdir():
+                entry = paramiko.SFTPAttributes.from_stat(item.lstat(), item.name)
+                result.append(entry)
+            return result
+        except OSError as error:
+            return paramiko.SFTPServer.convert_errno(error.errno)
+
+    def lstat(self, path):
+        try:
+            return paramiko.SFTPAttributes.from_stat(self.local(path).lstat())
+        except OSError as error:
+            return paramiko.SFTPServer.convert_errno(error.errno)
+
+    def mkdir(self, path, attr):
+        try:
+            self.local(path).mkdir(mode=attr.st_mode)
+            return paramiko.SFTP_OK
+        except OSError as error:
+            return paramiko.SFTPServer.convert_errno(error.errno)
+
+    def rmdir(self, path):
+        try:
+            self.local(path).rmdir()
+            return paramiko.SFTP_OK
+        except OSError as error:
+            return paramiko.SFTPServer.convert_errno(error.errno)
 
     def open(self, path, flags, attr):
         try:
@@ -81,8 +118,14 @@ class SftpFixture(paramiko.SFTPServerInterface):
     def rename(self, oldpath, newpath):
         try:
             old = self.local(oldpath)
-            os.link(old, self.local(newpath))
-            old.unlink()
+            new = self.local(newpath)
+            if old.is_dir():
+                if os.path.lexists(new):
+                    raise FileExistsError(errno.EEXIST, 'Destination already exists')
+                old.rename(new)
+            else:
+                os.link(old, new)
+                old.unlink()
             return paramiko.SFTP_OK
         except OSError as error:
             return paramiko.SFTPServer.convert_errno(error.errno)
@@ -104,6 +147,10 @@ for mode in ('ok', 'bad', 'reject', 'remote-close', 'stall', 'refused', 'sftp'):
     temporary = tempfile.TemporaryDirectory() if mode == 'sftp' else None
     if temporary:
         root = Path(temporary.name)
+        work = root / 'work'
+        work.mkdir()
+        (work / 'keep.txt').write_bytes(b'keep')
+        (work / 'link').symlink_to('keep.txt')
         (root / 'large.bin').write_bytes(b'x' * (2 * 1024 * 1024))
     def serve():
         transport = None
@@ -135,7 +182,7 @@ for mode in ('ok', 'bad', 'reject', 'remote-close', 'stall', 'refused', 'sftp'):
         thread = threading.Thread(target=serve, daemon=True)
         thread.start()
     try:
-        subprocess.run([sys.argv[1], str(port), mode, fingerprint], check=True, timeout=15)
+        subprocess.run([sys.argv[1], str(port), mode, fingerprint], check=True, timeout=30)
         if mode in ('reject', 'stall', 'refused'):
             assert server.attempts == 0, 'Password sent before trust approval'
         elif mode in ('ok', 'bad', 'remote-close', 'sftp'):
@@ -146,10 +193,13 @@ for mode in ('ok', 'bad', 'reject', 'remote-close', 'stall', 'refused', 'sftp'):
             assert (root / 'after-cancel').read_bytes() == expected
             assert (root / 'empty').stat().st_size == 0
             assert not (root / 'cancelled').exists()
+            assert sorted(item.name for item in work.iterdir()) == ['keep.txt', 'link']
+            assert (work / 'keep.txt').read_bytes() == b'keep'
+            assert (work / 'link').is_symlink()
             assert not list(root.glob('.harmonyscp-*.part'))
     finally:
         stop.set()
         listener.close()
         if thread: thread.join(timeout=2)
         if temporary: temporary.cleanup()
-print('All 6 SSH scenarios and SFTP upload/download, failure and cancellation checks passed')
+print('All 6 SSH scenarios and SFTP upload/download, file management, failure and cancellation checks passed')

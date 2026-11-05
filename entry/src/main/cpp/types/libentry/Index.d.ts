@@ -19,3 +19,18 @@ export const status: () => SshStatus;
 export const startTransfer: (upload: boolean, fd: number, remotePath: string, connectionId: number) => boolean;
 export const cancelTransfer: () => void;
 export const transferStatus: () => TransferStatus;
+
+export interface RemoteEntry {
+  name: string;
+  kind: string;
+  size: number;
+  modified: number;
+}
+export interface RemoteStatus {
+  state: string;
+  message: string;
+  path: string;
+  entries: RemoteEntry[];
+}
+export const startRemote: (action: string, path: string, newName: string, connectionId: number) => boolean;
+export const remoteStatus: () => RemoteStatus;

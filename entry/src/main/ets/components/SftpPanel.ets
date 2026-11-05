@@ -1,15 +1,24 @@
 import { common } from '@kit.AbilityKit';
 import { fileIo, picker } from '@kit.CoreFileKit';
-import ssh from 'libentry.so';
+import ssh, { RemoteEntry } from 'libentry.so';
 
 const DOWNLOAD_FILE: string = '/payload';
 
 @Component
 export struct SftpPanel {
   @Prop connected: boolean = false;
-  @State remotePath: string = '';
+  @State directory: string = '';
+  @State pathInput: string = '.';
+  @State entries: RemoteEntry[] = [];
+  @State selected: RemoteEntry | undefined = undefined;
+  @State listing: boolean = false;
+  @State listMessage: string = '';
+  @State operationMessage: string = '';
+  @State editor: string = '';
+  @State nameInput: string = '';
+  @State hasUpload: boolean = false;
   @State uploadName: string = '';
-  @State message: string = '先选择本地上传文件，连接后填写远端完整路径';
+  @State message: string = '登录后浏览远程文件。上传也可在连接前选好本地文件';
   @State busy: boolean = false;
   @State running: boolean = false;
   @State cancelling: boolean = false;
@@ -21,6 +30,9 @@ export struct SftpPanel {
   private uploadUri: string = '';
   private downloadDir: string = '';
   private downloadName: string = '';
+  private browserConnection: number = -1;
+  private remoteAction: string = '';
+  private uploadDirectory: string = '';
 
   aboutToAppear(): void {
     this.active = true;
@@ -64,6 +76,7 @@ export struct SftpPanel {
       file = await fileIo.open(result[0], fileIo.OpenMode.READ_ONLY);
       if (!this.active) return;
       this.uploadName = file.name;
+      this.hasUpload = true;
       this.uploadUri = result[0];
       this.message = '已选择上传文件';
     } catch {
@@ -74,16 +87,125 @@ export struct SftpPanel {
     }
   }
 
-  private async start(upload: boolean): Promise<void> {
+  private childPath(name: string): string {
+    return this.directory === '/' ? '/' + name : this.directory + '/' + name;
+  }
+
+  private validName(name: string): boolean {
+    return name.length > 0 && name !== '.' && name !== '..' && !name.includes('/') && !name.includes('\u0000');
+  }
+
+  private blocked(): boolean {
+    return this.running || this.busy || this.listing;
+  }
+
+  private requestRemote(action: string, path: string, name: string = ''): void {
+    if (!this.connected || this.blocked()) return;
+    if (!ssh.startRemote(action, path, name, this.browserConnection)) {
+      this.operationMessage = '无法开始远端操作，请检查路径、连接状态后重试';
+      return;
+    }
+    this.remoteAction = action;
+    this.listing = true;
+  }
+
+  private navigate(path: string): void {
+    if (path !== '.' && !path.startsWith('/')) {
+      this.operationMessage = '请输入以 / 开头的目录路径，或输入 . 返回登录目录';
+      return;
+    }
+    this.editor = '';
+    this.operationMessage = '';
+    this.requestRemote('list', path);
+  }
+
+  private refreshBrowser(): void {
     const connection = ssh.status();
-    const path = this.remotePath;
-    const name = path.substring(path.lastIndexOf('/') + 1);
-    if (connection.state !== 'connected') {
+    if (!this.connected || connection.state !== 'connected') {
+      if (this.browserConnection !== -1) {
+        if (this.listing) {
+          const result = ssh.remoteStatus();
+          this.message = result.state === 'running' ? '连接已断开，请重新连接并刷新目录核对结果' : result.message;
+        }
+        this.browserConnection = -1;
+        this.directory = '';
+        this.pathInput = '.';
+        this.entries = [];
+        this.selected = undefined;
+        this.listing = false;
+        this.editor = '';
+        this.listMessage = '';
+        this.operationMessage = '';
+      }
+      return;
+    }
+    if (this.browserConnection !== connection.connectionId) {
+      if (this.blocked()) return;
+      this.browserConnection = connection.connectionId;
+      this.navigate('.');
+      return;
+    }
+    if (!this.listing) return;
+    const result = ssh.remoteStatus();
+    if (result.state === 'running') return;
+    this.listing = false;
+    if (result.state !== 'succeeded') {
+      this.operationMessage = result.message;
+      return;
+    }
+    this.selected = undefined;
+    if (this.remoteAction === 'list') {
+      this.directory = result.path;
+      this.pathInput = result.path;
+      this.entries = result.entries;
+      this.listMessage = result.message;
+    } else {
+      this.operationMessage = result.message;
+      this.entries = [];
+      this.listMessage = '';
+      this.requestRemote('list', this.directory);
+    }
+  }
+
+  private submitEdit(): void {
+    const entry = this.selected;
+    if (this.editor === 'delete') {
+      if (entry) this.requestRemote(entry.kind === 'directory' ? 'rmdir' : 'unlink', this.childPath(entry.name));
+    } else {
+      if (!this.validName(this.nameInput)) {
+        this.operationMessage = '请输入单个有效名称，名称不能包含 /';
+        return;
+      }
+      if (this.editor === 'mkdir') {
+        this.requestRemote('mkdir', this.childPath(this.nameInput));
+      } else if (entry) {
+        if (entry.name === this.nameInput) {
+          this.editor = '';
+          return;
+        }
+        this.requestRemote('rename', this.childPath(entry.name), this.nameInput);
+      }
+    }
+    if (this.listing) this.editor = '';
+  }
+
+  private entryInfo(entry: RemoteEntry): string {
+    let label = entry.kind === 'directory' ? '文件夹' :
+      (entry.kind === 'file' ? '文件' : (entry.kind === 'link' ? '符号链接' : '其他类型'));
+    if (entry.kind === 'file' && entry.size >= 0) label += ' · ' + entry.size.toString() + ' 字节';
+    if (entry.modified >= 0) label += ' · ' + new Date(entry.modified * 1000).toLocaleString();
+    return label;
+  }
+
+  private async start(upload: boolean, name: string): Promise<void> {
+    const connection = ssh.status();
+    const path = this.childPath(name);
+    if (connection.state !== 'connected' || connection.connectionId !== this.browserConnection) {
       this.message = '请先连接并确认服务器身份';
       return;
     }
-    if (!path.startsWith('/') || name.length === 0 || name === '.' || name === '..') {
-      this.message = '请输入远端完整文件路径，例如 /home/user/test.txt';
+    if (!this.directory || !this.validName(name)) {
+      this.message = '请确认当前目录和文件名';
       return;
     }
     this.busy = true;
@@ -101,6 +223,7 @@ export struct SftpPanel {
         this.message = '无法开始传输，请检查连接状态和远端路径';
         return;
       }
+      this.uploadDirectory = upload ? this.directory : '';
       if (!upload) {
         this.downloadDir = directory;
         this.downloadName = name;
@@ -109,7 +232,6 @@ export struct SftpPanel {
       this.bytes = 0;
       this.total = 0;
       this.running = true;
-      this.refresh();
     } catch {
       this.message = upload ? '无法打开上传文件，请重新选择' : '无法创建下载缓存，请检查剩余存储空间';
     } finally {
@@ -120,7 +242,8 @@ export struct SftpPanel {
   }
 
   private refresh(): void {
-    if (!this.running) return;
+    this.refreshBrowser();
+    if (!this.running || this.busy) return;
     const snapshot = ssh.transferStatus();
     if (this.bytes !== snapshot.bytes) this.bytes = snapshot.bytes;
     if (this.total !== snapshot.total) this.total = snapshot.total;
@@ -129,6 +252,10 @@ export struct SftpPanel {
     if (snapshot.state === 'running') return;
     this.running = false;
     this.cancelling = false;
+    if (snapshot.state === 'succeeded' && this.uploadDirectory === this.directory && this.uploadDirectory) {
+      this.requestRemote('list', this.directory);
+    }
+    this.uploadDirectory = '';
     if (this.downloadDir && !this.readyToSave) {
       if (snapshot.state === 'succeeded') {
         this.readyToSave = true;
@@ -167,29 +294,98 @@ export struct SftpPanel {
     }
   }
 
+  @Builder
+  remoteBrowser() {
+    Column({ space: 8 }) {
+      TextInput({ placeholder: '远端目录路径，或 .', text: this.pathInput })
+        .enabled(!this.blocked() && !this.editor)
+        .onChange((value: string) => this.pathInput = value)
+      Row({ space: 6 }) {
+        Button('前往').layoutWeight(1).enabled(!this.blocked() && !this.editor)
+          .onClick(() => this.navigate(this.pathInput))
+        Button('上一级').layoutWeight(1)
+          .enabled(!this.blocked() && !this.editor && this.directory.length > 1)
+          .onClick(() => this.navigate(this.directory.substring(0, this.directory.lastIndexOf('/')) || '/'))
+        Button('刷新').layoutWeight(1).enabled(!this.blocked() && !this.editor)
+          .onClick(() => this.navigate(this.directory || this.pathInput))
+      }.width('100%')
+      if (this.directory) {
+        Text(this.directory).width('100%').fontWeight(FontWeight.Medium).copyOption(CopyOptions.InApp)
+        if (this.entries.length > 0) {
+          List({ space: 3 }) {
+            ForEach(this.entries, (entry: RemoteEntry) => {
+              ListItem() {
+                Column({ space: 4 }) {
+                  Text(entry.name).fontSize(14).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                  Text(this.entryInfo(entry)).fontSize(11).fontColor('#64748B')
+                }.width('100%').alignItems(HorizontalAlign.Start).padding(8)
+                  .backgroundColor(this.selected?.name === entry.name ? '#DBEAFE' : '#F8FAFC')
+                  .borderRadius(8)
+                  .onClick(() => {
+                    if (!this.blocked() && !this.editor) this.selected = entry;
+                  })
+                }
+            }, (entry: RemoteEntry) => entry.name + '|' + entry.kind + '|' + entry.size + '|' + entry.modified)
+          }.width('100%').height(Math.min(300, this.entries.length * 58))
+            .nestedScroll({ scrollForward: NestedScrollMode.SELF_FIRST, scrollBackward: NestedScrollMode.SELF_FIRST })
+        }
+        Button('新建文件夹').width('100%').enabled(!this.blocked() && !this.editor)
+          .onClick(() => { this.nameInput = ''; this.editor = 'mkdir'; })
+        if (this.selected && (this.selected.kind === 'file' || this.selected.kind === 'directory')) {
+          Text(this.selected.name).width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Row({ space: 6 }) {
+            if (this.selected.kind === 'file') {
+              Button('下载文件').layoutWeight(1).enabled(!this.blocked() && !this.editor && !this.readyToSave)
+                .onClick(() => { if (this.selected) this.start(false, this.selected.name); })
+            } else {
+              Button('打开文件夹').layoutWeight(1).enabled(!this.blocked() && !this.editor)
+                .onClick(() => { if (this.selected) this.navigate(this.childPath(this.selected.name)); })
+            }
+            Button('重命名').layoutWeight(1).enabled(!this.blocked() && !this.editor)
+              .onClick(() => { this.nameInput = this.selected?.name ?? ''; this.editor = 'rename'; })
+            Button('删除').layoutWeight(1).enabled(!this.blocked() && !this.editor)
+              .onClick(() => { this.editor = 'delete'; })
+          }.width('100%')
+        }
+        if (this.editor) {
+          if (this.editor === 'delete') {
+            Text(this.selected?.kind === 'directory' ?
+              '删除空文件夹「' + this.selected.name + '」？' :
+              '删除文件「' + (this.selected?.name ?? '') + '」？').width('100%')
+          } else {
+            TextInput({ placeholder: '输入名称', text: this.nameInput })
+              .onChange((value: string) => this.nameInput = value)
+          }
+          Row({ space: 6 }) {
+            Button(this.editor === 'delete' ? '确认删除' : '确认').layoutWeight(1)
+              .enabled(!this.blocked()).onClick(() => this.submitEdit())
+            Button('取消').layoutWeight(1).onClick(() => { this.editor = ''; })
+          }.width('100%')
+        }
+      }
+      if (this.listing || this.listMessage) {
+        Text(this.listing ? '正在处理远端请求…' : this.listMessage).fontSize(12).width('100%')
+      }
+      if (this.operationMessage) Text(this.operationMessage).fontSize(13).width('100%')
+    }.width('100%')
+  }
+
   build() {
     Column({ space: 10 }) {
-      Text('SFTP 单文件传输').fontSize(17).fontWeight(FontWeight.Bold).width('100%')
-      if (this.connected) {
-        TextInput({ placeholder: '远端完整路径，例如 /home/user/test.txt', text: this.remotePath })
-          .enabled(!this.running && !this.busy)
-          .onChange((value: string) => this.remotePath = value)
-          .height(48).borderRadius(10).backgroundColor('#F1F5F9')
-      }
-      Button(this.uploadName ? '重新选择上传文件' : '选择上传文件')
-        .width('100%').enabled(!this.busy && !this.running)
+      Text('SFTP 远程文件').fontSize(17).fontWeight(FontWeight.Bold).width('100%')
+      if (this.connected) this.remoteBrowser()
+      Button(this.hasUpload ? '重新选择上传文件' : '选择上传文件')
+        .width('100%').enabled(!this.blocked() && !this.editor)
         .onClick(() => { this.pickUpload(); })
-      if (this.uploadName) {
-        Text(this.uploadName).fontSize(13).width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      if (this.hasUpload) {
+        TextInput({ placeholder: '上传文件名', text: this.uploadName })
+          .enabled(!this.blocked() && !this.editor)
+          .onChange((value: string) => this.uploadName = value)
+        if (this.connected && this.directory) {
+          Button('上传到当前目录').width('100%').enabled(!this.blocked() && !this.editor)
+            .onClick(() => { this.start(true, this.uploadName); })
+        }
       }
-      Row({ space: 8 }) {
-        Button('上传文件').layoutWeight(1)
-          .enabled(this.connected && !!this.uploadName && !this.running && !this.busy)
-          .onClick(() => { this.start(true); })
-        Button('下载文件').layoutWeight(1)
-          .enabled(this.connected && !this.running && !this.busy && !this.readyToSave)
-          .onClick(() => { this.start(false); })
-      }.width('100%')
       if (this.running) {
         if (this.total > 0) {
           Progress({ value: this.bytes / this.total * 100, total: 100 }).width('100%')

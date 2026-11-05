@@ -89,7 +89,7 @@ bool SshClient::StartTransfer(bool upload, int fd, const std::string &remotePath
 
     std::lock_guard<std::mutex> lock(mutex_);
     if (cancelled_ || status_.state != "connected" || status_.connectionId != connectionId ||
-        transferStatus_.state == "running") return false;
+        transferStatus_.state == "running" || remoteStatus_.state == "running") return false;
     auto request = std::make_unique<TransferRequest>(upload, remotePath);
     request->fd = fcntl(fd, F_DUPFD_CLOEXEC, 0);
     if (request->fd < 0) return false;
@@ -107,6 +107,31 @@ void SshClient::CancelTransfer() {
 TransferStatus SshClient::GetTransferStatus() {
     std::lock_guard<std::mutex> lock(mutex_);
     return transferStatus_;
+}
+
+bool SshClient::StartRemote(RemoteRequest request, uint32_t connectionId) {
+    const auto &path = request.path;
+    if (path.empty() || path.size() > 4096 || path.find('\0') != std::string::npos) return false;
+    if (request.action == RemoteAction::List) {
+        if (path != "." && path.front() != '/') return false;
+    } else {
+        if (path.front() != '/') return false;
+        const auto parentLength = path.rfind('/') + 1;
+        if (!IsRemoteName(path.substr(parentLength))) return false;
+        if (request.action == RemoteAction::Rename &&
+            (!IsRemoteName(request.newName) || parentLength + request.newName.size() > 4096)) return false;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (cancelled_ || status_.state != "connected" || status_.connectionId != connectionId ||
+        transferStatus_.state == "running" || remoteStatus_.state == "running") return false;
+    pendingRemote_ = std::make_unique<RemoteRequest>(std::move(request));
+    remoteStatus_ = {"running", "", "", {}};
+    return true;
+}
+
+RemoteStatus SshClient::GetRemoteStatus() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return remoteStatus_;
 }
 
 void SshClient::Run(std::string host, int port) {
@@ -193,9 +218,27 @@ void SshClient::Run(std::string host, int port) {
         libssh2_keepalive_config(session, 1, 10);
         while (!cancelled_) {
             std::unique_ptr<TransferRequest> request;
+            std::unique_ptr<RemoteRequest> remote;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 request = std::move(pendingTransfer_);
+                remote = std::move(pendingRemote_);
+            }
+            if (remote) {
+                RemoteStatus result;
+                auto outcome = RunSftpRemote(session, fd, *remote, [&]() { return cancelled_.load(); }, result);
+                result.state = outcome.state;
+                result.message = outcome.message;
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    if (!outcome.sessionUsable && !cancelled_) {
+                        status_.state = "error";
+                        status_.message = "远端操作期间连接中断，请重新连接";
+                    }
+                    remoteStatus_ = std::move(result);
+                }
+                if (!outcome.sessionUsable) break;
+                continue;
             }
             if (request) {
                 auto outcome = RunSftpTransfer(session, fd, *request,
@@ -237,6 +280,11 @@ void SshClient::Run(std::string host, int port) {
     if (fd >= 0) close(fd);
     { std::lock_guard<std::mutex> lock(mutex_); Erase(password_); authenticate_ = false;
       pendingTransfer_.reset();
+      pendingRemote_.reset();
+      if (remoteStatus_.state == "running") {
+          remoteStatus_.state = cancelled_ ? "cancelled" : "failed";
+          remoteStatus_.message = "连接已断开，远端操作未执行";
+      }
       if (transferStatus_.state == "running") {
           transferStatus_.state = cancelled_ ? "cancelled" : "failed";
           transferStatus_.message = cancelled_ ? "传输已取消" : "连接已断开，传输未完成";

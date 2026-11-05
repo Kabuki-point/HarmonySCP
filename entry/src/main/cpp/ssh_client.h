@@ -24,12 +24,16 @@ public:
     bool StartTransfer(bool upload, int fd, const std::string &remotePath, uint32_t connectionId);
     void CancelTransfer();
     TransferStatus GetTransferStatus();
+    bool StartRemote(RemoteRequest request, uint32_t connectionId);
+    RemoteStatus GetRemoteStatus();
 private:
     void Run(std::string host, int port);
     void Set(const std::string &state, const std::string &message);
     std::mutex mutex_;
     SshStatus status_;
     TransferStatus transferStatus_;
+    RemoteStatus remoteStatus_;
+    std::unique_ptr<RemoteRequest> pendingRemote_;
     std::unique_ptr<TransferRequest> pendingTransfer_;
     std::thread worker_;
     std::atomic<bool> cancelled_{false};

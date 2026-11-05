@@ -20,10 +20,39 @@ TransferRequest::~TransferRequest() {
 }
 
 namespace {
+// Do not pass names through NAPI if UTF-8 decoding would change their bytes.
+bool IsUtf8(const std::string &name) {
+    for (size_t i = 0; i < name.size();) {
+        const auto first = static_cast<unsigned char>(name[i++]);
+        if (first < 0x80) continue;
+        if (first < 0xc2 || first > 0xf4) return false;
+        const int extra = first < 0xe0 ? 1 : (first < 0xf0 ? 2 : 3);
+        if (name.size() - i < static_cast<size_t>(extra)) return false;
+        const auto second = static_cast<unsigned char>(name[i]);
+        if ((first == 0xe0 && second < 0xa0) || (first == 0xed && second >= 0xa0) ||
+            (first == 0xf0 && second < 0x90) || (first == 0xf4 && second >= 0x90)) return false;
+        for (int j = 0; j < extra; ++j) {
+            if ((static_cast<unsigned char>(name[i++]) & 0xc0) != 0x80) return false;
+        }
+    }
+    return true;
+}
+
+}
+
+bool IsRemoteName(const std::string &name) {
+    return !name.empty() && name != "." && name != ".." && name.find('/') == std::string::npos &&
+        name.find('\0') == std::string::npos && IsUtf8(name);
+}
+
+namespace {
 using Clock = std::chrono::steady_clock;
 constexpr auto IO_TIMEOUT = std::chrono::seconds(15);
 constexpr auto CLEANUP_TIMEOUT = std::chrono::seconds(2);
 constexpr size_t BUFFER_SIZE = 64 * 1024;
+constexpr size_t MAX_REMOTE_PATH = 4096;
+constexpr size_t MAX_DIRECTORY_ENTRIES = 5000;
+constexpr auto LIST_TIMEOUT = std::chrono::seconds(30);
 
 class Cancelled {};
 
@@ -39,26 +68,25 @@ std::string TemporaryPath(const std::string &path) {
 }
 
 // Only the SSH worker uses this object and the session it borrows.
-class Transfer {
+class SftpOperation {
 public:
-    Transfer(LIBSSH2_SESSION *session, int socket, const TransferRequest &request,
-        const std::function<bool()> &cancelled, const std::function<void(uint64_t, uint64_t)> &progress)
-        : session_(session), socket_(socket), request_(request), cancelled_(cancelled), progress_(progress) {}
+    SftpOperation(LIBSSH2_SESSION *session, int socket, const std::function<bool()> &cancelled)
+        : session_(session), socket_(socket), cancelled_(cancelled) {}
 
-    TransferOutcome Run() {
-        TransferOutcome outcome{"succeeded", request_.upload ? "文件已上传" : "下载完成，可保存到设备"};
+    TransferOutcome RunTransfer(const TransferRequest &request,
+        const std::function<void(uint64_t, uint64_t)> &progress) {
+        TransferOutcome outcome{"succeeded", request.upload ? "文件已上传" : "下载完成，可保存到设备"};
         try {
             CheckCancelled();
             struct stat info{};
-            if (fstat(request_.fd, &info) != 0 || !S_ISREG(info.st_mode)) {
+            if (fstat(request.fd, &info) != 0 || !S_ISREG(info.st_mode)) {
                 throw std::runtime_error("无法访问本地文件，请重新选择普通文件");
             }
-            sftp_ = Retry([&]() { return libssh2_sftp_init(session_); });
-            if (!sftp_) Fail("服务器未能启动 SFTP，请检查子系统配置");
-            if (request_.upload) {
-                Upload(static_cast<uint64_t>(info.st_size));
+            OpenSftp();
+            if (request.upload) {
+                Upload(request, static_cast<uint64_t>(info.st_size), progress);
             } else {
-                Download();
+                Download(request, progress);
             }
         } catch (const Cancelled &) {
             outcome = {"cancelled", "传输已取消"};
@@ -73,7 +101,34 @@ public:
         return outcome;
     }
 
+    TransferOutcome RunRemote(const RemoteRequest &request, RemoteStatus &result) {
+        TransferOutcome outcome{"succeeded", ""};
+        bool changeUnconfirmed = false;
+        try {
+            OpenSftp();
+            if (request.action == RemoteAction::List) {
+                outcome.message = List(request.path, result);
+            } else {
+                outcome.message = Mutate(request, changeUnconfirmed);
+            }
+        } catch (const Cancelled &) {
+            outcome = {"cancelled", "远端操作已取消"};
+        } catch (const std::exception &error) {
+            outcome = {"failed", error.what()};
+        }
+        Cleanup();
+        if (changeUnconfirmed) outcome.message += "，请重新连接并刷新目录核对结果";
+        if (outcome.state != "succeeded") result = {};
+        outcome.sessionUsable = sessionUsable_;
+        return outcome;
+    }
+
 private:
+    void OpenSftp() {
+        sftp_ = Retry([&]() { return libssh2_sftp_init(session_); });
+        if (!sftp_) Fail("服务器未能启动 SFTP，请检查子系统配置");
+    }
+
     void CheckCancelled() const {
         if (cancelled_()) throw Cancelled{};
     }
@@ -146,9 +201,10 @@ private:
         if (rc != 0) Fail("远端文件关闭失败");
     }
 
-    void Upload(uint64_t total) {
-        progress_(0, total);
-        temporaryPath_ = TemporaryPath(request_.remotePath);
+    void Upload(const TransferRequest &request, uint64_t total,
+        const std::function<void(uint64_t, uint64_t)> &progress) {
+        progress(0, total);
+        temporaryPath_ = TemporaryPath(request.remotePath);
         file_ = Retry([&]() {
             temporaryOpenUnconfirmed_ = true;
             return libssh2_sftp_open(sftp_, temporaryPath_.c_str(),
@@ -162,7 +218,7 @@ private:
         uint64_t sent = 0;
         while (true) {
             CheckCancelled();
-            const ssize_t count = read(request_.fd, buffer.data(), buffer.size());
+            const ssize_t count = read(request.fd, buffer.data(), buffer.size());
             if (count < 0 && errno == EINTR) continue;
             if (count < 0) throw std::runtime_error("本地文件读取失败，请重新选择文件");
             if (count == 0) break;
@@ -180,7 +236,7 @@ private:
                 }
                 offset += written;
                 sent += written;
-                progress_(sent, total);
+                progress(sent, total);
                 deadline = Clock::now() + IO_TIMEOUT;
             }
         }
@@ -191,23 +247,23 @@ private:
         publishUnconfirmed_ = true;
         const int renamed = RetryUntil([&]() {
             return libssh2_sftp_rename_ex(sftp_, temporaryPath_.c_str(), temporaryPath_.size(),
-                request_.remotePath.c_str(), request_.remotePath.size(), 0);
+                request.remotePath.c_str(), request.remotePath.size(), 0);
         }, Clock::now() + IO_TIMEOUT, true);
         publishUnconfirmed_ = renamed != 0 && libssh2_session_last_errno(session_) != LIBSSH2_ERROR_SFTP_PROTOCOL;
         if (renamed != 0) Fail("无法发布远端文件，目标可能已存在，请检查路径或更换文件名");
         temporaryCreated_ = false;
     }
 
-    void Download() {
+    void Download(const TransferRequest &request, const std::function<void(uint64_t, uint64_t)> &progress) {
         LIBSSH2_SFTP_ATTRIBUTES attributes{};
-        if (Retry([&]() { return libssh2_sftp_stat(sftp_, request_.remotePath.c_str(), &attributes); }) != 0) {
+        if (Retry([&]() { return libssh2_sftp_stat(sftp_, request.remotePath.c_str(), &attributes); }) != 0) {
             Fail("无法读取远端文件信息，请检查路径");
         }
         if (!(attributes.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS) || !LIBSSH2_SFTP_S_ISREG(attributes.permissions)) {
             throw std::runtime_error("远端路径必须指向普通文件");
         }
         file_ = Retry([&]() {
-            return libssh2_sftp_open(sftp_, request_.remotePath.c_str(), LIBSSH2_FXF_READ, 0);
+            return libssh2_sftp_open(sftp_, request.remotePath.c_str(), LIBSSH2_FXF_READ, 0);
         });
         if (!file_) Fail("无法打开远端文件，请检查路径和读取权限");
         attributes = {};
@@ -215,7 +271,7 @@ private:
         if (!(attributes.flags & LIBSSH2_SFTP_ATTR_SIZE)) throw std::runtime_error("服务器未提供远端文件大小");
         const uint64_t total = attributes.filesize;
         uint64_t received = 0;
-        progress_(0, total);
+        progress(0, total);
 
         std::array<char, BUFFER_SIZE> buffer;
         while (true) {
@@ -226,18 +282,124 @@ private:
             ssize_t offset = 0;
             while (offset < count) {
                 CheckCancelled();
-                const ssize_t written = write(request_.fd, buffer.data() + offset, count - offset);
+                const ssize_t written = write(request.fd, buffer.data() + offset, count - offset);
                 if (written < 0 && errno == EINTR) continue;
                 if (written <= 0) throw std::runtime_error("本地文件写入失败，请检查剩余存储空间");
                 offset += written;
             }
             received += count;
-            progress_(received, total);
+            progress(received, total);
         }
         if (received != total) throw std::runtime_error("下载期间远端文件大小发生变化");
         CloseFile();
-        if (fsync(request_.fd) != 0) throw std::runtime_error("本地文件保存失败，请检查剩余存储空间");
+        if (fsync(request.fd) != 0) throw std::runtime_error("本地文件保存失败，请检查剩余存储空间");
         CheckCancelled();
+    }
+
+    std::string List(const std::string &path, RemoteStatus &result) {
+        std::array<char, MAX_REMOTE_PATH + 1> name{};
+        const int length = Retry([&]() {
+            return libssh2_sftp_realpath(sftp_, path.c_str(), name.data(), name.size());
+        });
+        if (length <= 0 || static_cast<size_t>(length) >= name.size() || name.front() != '/') {
+            Fail("无法解析远端目录，请检查路径");
+        }
+        result.path.assign(name.data(), length);
+        if (result.path.find('\0') != std::string::npos || !IsUtf8(result.path)) {
+            throw std::runtime_error("服务器返回了无法识别的目录路径");
+        }
+        while (result.path.size() > 1 && result.path.back() == '/') result.path.pop_back();
+
+        file_ = Retry([&]() { return libssh2_sftp_opendir(sftp_, result.path.c_str()); });
+        if (!file_) Fail("无法打开远端目录，请检查路径及读取权限");
+        const auto deadline = Clock::now() + LIST_TIMEOUT;
+        size_t seen = 0;
+        size_t skipped = 0;
+        while (true) {
+            CheckCancelled();
+            if (Clock::now() >= deadline) throw std::runtime_error("读取目录超时，请重试");
+            LIBSSH2_SFTP_ATTRIBUTES attributes{};
+            const int count = RetryUntil([&]() {
+                return libssh2_sftp_readdir(file_, name.data(), name.size(), &attributes);
+            }, deadline, true);
+            if (count == 0) break;
+            if (count < 0) Fail("无法读取远端目录");
+            if (static_cast<size_t>(count) >= name.size()) throw std::runtime_error("远端文件名过长");
+            std::string entryName(name.data(), count);
+            if (entryName == "." || entryName == "..") continue;
+            if (++seen > MAX_DIRECTORY_ENTRIES) {
+                throw std::runtime_error("目录超过 5000 项，请输入子目录路径");
+            }
+            if (!IsRemoteName(entryName)) {
+                ++skipped;
+                continue;
+            }
+            const char *kind = "other";
+            if (attributes.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS) {
+                if (LIBSSH2_SFTP_S_ISDIR(attributes.permissions)) kind = "directory";
+                if (LIBSSH2_SFTP_S_ISREG(attributes.permissions)) kind = "file";
+                if (LIBSSH2_SFTP_S_ISLNK(attributes.permissions)) kind = "link";
+            }
+            result.entries.push_back({std::move(entryName), kind,
+                attributes.flags & LIBSSH2_SFTP_ATTR_SIZE ? static_cast<double>(attributes.filesize) : -1,
+                attributes.flags & LIBSSH2_SFTP_ATTR_ACMODTIME ? static_cast<double>(attributes.mtime) : -1});
+        }
+        CloseFile();
+        std::sort(result.entries.begin(), result.entries.end(), [](const RemoteEntry &a, const RemoteEntry &b) {
+            const bool aDirectory = a.kind == "directory";
+            const bool bDirectory = b.kind == "directory";
+            return aDirectory == bDirectory ? a.name < b.name : aDirectory;
+        });
+        auto message = "共 " + std::to_string(result.entries.size()) + " 项";
+        if (skipped) message += "，已跳过 " + std::to_string(skipped) + " 个无法安全识别的名称";
+        return message;
+    }
+
+    std::string Mutate(const RemoteRequest &request, bool &changeUnconfirmed) {
+        auto change = [&](auto operation) {
+            const int rc = Retry([&]() {
+                changeUnconfirmed = true;
+                return operation();
+            });
+            changeUnconfirmed = rc != 0 && libssh2_session_last_errno(session_) != LIBSSH2_ERROR_SFTP_PROTOCOL;
+            return rc;
+        };
+        const auto &path = request.path;
+        if (request.action == RemoteAction::MakeDirectory) {
+            if (change([&]() { return libssh2_sftp_mkdir(sftp_, path.c_str(), 0755); }) != 0) {
+                Fail("无法新建文件夹，请检查是否同名或有写权限");
+            }
+            return "已新建文件夹";
+        }
+
+        LIBSSH2_SFTP_ATTRIBUTES attributes{};
+        if (Retry([&]() { return libssh2_sftp_lstat(sftp_, path.c_str(), &attributes); }) != 0) {
+            Fail("无法读取所选项目，请刷新目录");
+        }
+        const bool directory = LIBSSH2_SFTP_S_ISDIR(attributes.permissions);
+        if (!(attributes.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS) ||
+            (!directory && !LIBSSH2_SFTP_S_ISREG(attributes.permissions))) {
+            throw std::runtime_error("只能操作普通文件或文件夹");
+        }
+        if (request.action == RemoteAction::Rename) {
+            const auto target = path.substr(0, path.rfind('/') + 1) + request.newName;
+            if (change([&]() {
+                return libssh2_sftp_rename_ex(sftp_, path.c_str(), path.size(), target.c_str(), target.size(), 0);
+            }) != 0) Fail("重命名失败，请检查同名项目和写权限");
+            return "已重命名";
+        }
+        if (directory != (request.action == RemoteAction::RemoveDirectory)) {
+            throw std::runtime_error("项目类型已变化，请刷新目录");
+        }
+        if (directory) {
+            // RMDIR delegates the emptiness check to the server and never deletes children.
+            if (change([&]() { return libssh2_sftp_rmdir(sftp_, path.c_str()); }) != 0) {
+                Fail("无法删除文件夹，请确认文件夹为空且有写权限");
+            }
+        } else if (change([&]() { return libssh2_sftp_unlink(sftp_, path.c_str()); }) != 0) {
+            Fail("无法删除文件，请检查写权限");
+        }
+        return "已删除";
     }
 
     void Cleanup() {
@@ -271,9 +433,7 @@ private:
 
     LIBSSH2_SESSION *session_;
     int socket_;
-    const TransferRequest &request_;
     const std::function<bool()> &cancelled_;
-    const std::function<void(uint64_t, uint64_t)> &progress_;
     LIBSSH2_SFTP *sftp_ = nullptr;
     LIBSSH2_SFTP_HANDLE *file_ = nullptr;
     std::string temporaryPath_;
@@ -286,5 +446,10 @@ private:
 
 TransferOutcome RunSftpTransfer(LIBSSH2_SESSION *session, int socket, const TransferRequest &request,
     const std::function<bool()> &cancelled, const std::function<void(uint64_t, uint64_t)> &progress) {
-    return Transfer(session, socket, request, cancelled, progress).Run();
+    return SftpOperation(session, socket, cancelled).RunTransfer(request, progress);
+}
+
+TransferOutcome RunSftpRemote(LIBSSH2_SESSION *session, int socket, const RemoteRequest &request,
+    const std::function<bool()> &cancelled, RemoteStatus &result) {
+    return SftpOperation(session, socket, cancelled).RunRemote(request, result);
 }

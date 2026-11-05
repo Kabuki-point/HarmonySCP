@@ -28,4 +28,6 @@
 - [2026-11-04 / 02：实现 SFTP 单文件传输](changes/2026-11-04-02-sftp-single-file.md)
 - [2026-11-04 / 03：功能分支命名与 DevEco 检查](changes/2026-11-04-03-feature-branch-and-deveco-check.md)
 - [2026-11-04 / 04：模拟器验证 SFTP 单文件往返](changes/2026-11-04-04-sftp-emulator-round-trip.md)
+- [2026-11-04 / 05：SFTP 远程文件管理](changes/2026-11-04-05-sftp-file-manager.md)
+- [2026-11-05 / 01：SFTP 模拟器异常验收（进行中）](changes/2026-11-05-01-sftp-device-acceptance.md)
 - [新改动记录模板](changes/TEMPLATE.md)

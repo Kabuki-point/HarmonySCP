@@ -1,4 +1,5 @@
 #include "ssh_client.h"
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -25,6 +26,48 @@ TransferStatus WaitTransfer(SshClient &client, bool waitForProgress = false) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     throw std::runtime_error("Timed out waiting for SFTP");
+}
+
+RemoteStatus RunRemote(SshClient &client, RemoteAction action, const std::string &path,
+    const std::string &newName = "", const std::string &expected = "succeeded") {
+    const auto connectionId = client.Status().connectionId;
+    Require(!client.StartRemote({action, path, newName}, connectionId - 1), "Stale request accepted");
+    Require(client.StartRemote({action, path, newName}, connectionId), "Remote request rejected");
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto result = client.GetRemoteStatus();
+        if (result.state != "running") {
+            if (result.state != expected) throw std::runtime_error("Unexpected remote result: " + result.message);
+            Require(client.Status().state == "connected", "Remote request unexpectedly closed SSH");
+            return result;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    throw std::runtime_error("Timed out waiting for remote operation");
+}
+
+void TestRemoteBrowser(SshClient &client) {
+    const auto connectionId = client.Status().connectionId;
+    auto home = RunRemote(client, RemoteAction::List, ".");
+    Require(home.path == "/work" && home.entries.size() == 2, "Initial remote directory differs");
+    Require(home.entries[0].name == "keep.txt" && home.entries[0].kind == "file" &&
+        home.entries[0].size == 4 && home.entries[0].modified > 0, "File metadata differs");
+    Require(home.entries[1].kind == "link", "Symbolic link was followed");
+    Require(RunRemote(client, RemoteAction::List, "/").path == "/", "Root navigation failed");
+    Require(RunRemote(client, RemoteAction::List, "/work/..").path == "/", "Parent navigation failed");
+    RunRemote(client, RemoteAction::List, "/missing", "", "failed");
+    RunRemote(client, RemoteAction::List, "/denied", "", "failed");
+    Require(!client.StartRemote({RemoteAction::MakeDirectory, "/work/..", ""}, connectionId), "Parent mutation accepted");
+    Require(!client.StartRemote({RemoteAction::Rename, "/work/keep.txt", "nested/name"}, connectionId),
+        "Rename accepted multiple components");
+    RunRemote(client, RemoteAction::MakeDirectory, "/work/目录 space");
+    RunRemote(client, RemoteAction::MakeDirectory, "/work/目录 space", "", "failed");
+    Require(RunRemote(client, RemoteAction::List, "/work/目录 space").entries.empty(), "New directory is not empty");
+    RunRemote(client, RemoteAction::Rename, "/work/目录 space", "renamed");
+    RunRemote(client, RemoteAction::RemoveFile, "/work/renamed", "", "failed");
+    RunRemote(client, RemoteAction::RemoveDirectory, "/work/renamed");
+    RunRemote(client, RemoteAction::RemoveDirectory, "/work", "", "failed");
+    RunRemote(client, RemoteAction::RemoveFile, "/work/link", "", "failed");
 }
 
 void TestSftp(SshClient &client) {
@@ -75,6 +118,17 @@ void TestSftp(SshClient &client) {
     transfer(true, "/cancelled", std::string(2 * 1024 * 1024, 'x'), "cancelled", true);
     transfer(false, "/large.bin", "", "cancelled", true);
     transfer(true, "/after-cancel", payload, "succeeded");
+    TestRemoteBrowser(client);
+    transfer(true, "/work/临时 file", payload, "succeeded");
+    const auto entries = RunRemote(client, RemoteAction::List, "/work", "", "succeeded").entries;
+    Require(std::any_of(entries.begin(), entries.end(), [](const RemoteEntry &entry) {
+        return entry.name == "临时 file" && entry.kind == "file";
+    }), "Uploaded file missing from listing");
+    RunRemote(client, RemoteAction::Rename, "/work/临时 file", "keep.txt", "failed");
+    RunRemote(client, RemoteAction::Rename, "/work/临时 file", "已重命名.bin", "succeeded");
+    Require(transfer(false, "/work/已重命名.bin", "", "succeeded") == payload, "Renamed download differs");
+    RunRemote(client, RemoteAction::RemoveFile, "/work/已重命名.bin", "", "succeeded");
+    RunRemote(client, RemoteAction::RemoveFile, "/work/已重命名.bin", "", "failed");
 }
 
 int main(int argc, char **argv) {

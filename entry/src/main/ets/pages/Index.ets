@@ -182,7 +182,7 @@ struct Index {
         if (this.nativeAvailable) {
           SftpPanel({ connected: this.state === 'connected' && !this.cancelling })
         }
-        Text('SSH 登录与 SFTP 单文件传输\n支持 IPv4 / IPv6 · 不保存密码 · 指纹确认限时 2 分钟')
+        Text('SSH 登录与 SFTP 远程文件管理\n支持 IPv4 / IPv6 · 不保存密码 · 指纹确认限时 2 分钟')
           .fontSize(11).lineHeight(19).fontColor('#64748B').textAlign(TextAlign.Center).margin({ top: 24, bottom: 24 })
       }.width('100%').padding({ left: 20, right: 20, top: 28 })
     }.width('100%').height('100%').backgroundColor('#F8FAFC').align(Alignment.Top)
