@@ -47,3 +47,10 @@ __pycache__/
 *.key
 
 # Keep OHPM lockfiles and required third-party .a/.so libraries tracked.
+
+# Docx document work (deliverables, sources, fill scripts, intermediates) — never tracked
+/*.docx
+/demand.md
+/*_doc*.py
+/work/
+/qa-render/
