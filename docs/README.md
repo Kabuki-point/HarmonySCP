@@ -30,4 +30,5 @@
 - [2026-11-04 / 04：模拟器验证 SFTP 单文件往返](changes/2026-11-04-04-sftp-emulator-round-trip.md)
 - [2026-11-04 / 05：SFTP 远程文件管理](changes/2026-11-04-05-sftp-file-manager.md)
 - [2026-11-05 / 01：SFTP 模拟器异常验收（进行中）](changes/2026-11-05-01-sftp-device-acceptance.md)
+- [2026-11-05 / 02：Windows x86_64 模拟器验证 SSH 与 SFTP（第一批）](changes/2026-11-05-02-windows-x86-emulator-validation.md)
 - [新改动记录模板](changes/TEMPLATE.md)
