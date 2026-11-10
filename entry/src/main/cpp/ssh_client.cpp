@@ -32,6 +32,20 @@ void Erase(std::string &value) {
     }
     value.clear();
 }
+// Measured codes below come from libssh2 1.11.1; unrecognised values keep the raw
+// code so a failed login can still be diagnosed without exposing the key material.
+std::string KeyAuthMessage(int code) {
+    switch (code) {
+        case LIBSSH2_ERROR_PUBLICKEY_UNVERIFIED:
+            return "服务器不接受这把公钥，请确认对应公钥已加入服务器 authorized_keys";
+        case LIBSSH2_ERROR_AUTHENTICATION_FAILED:
+            return "密钥认证被拒绝，请检查用户名与私钥是否匹配";
+        case LIBSSH2_ERROR_FILE:
+            return "私钥无法解析，请确认文件为未加密的 OpenSSH 或 PEM 私钥，且口令正确";
+        default:
+            return "密钥认证失败（错误码 " + std::to_string(code) + "），请确认服务器已启用公钥登录";
+    }
+}
 std::string Base64(const unsigned char *bytes, size_t size) {
     const char *table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     std::string out;
@@ -68,7 +82,8 @@ bool SshClient::Connect(const std::string &host, int port) {
     if (worker_.joinable()) worker_.join();
     cancelled_ = false;
     { std::lock_guard<std::mutex> lock(mutex_);
-      status_ = {"connecting", "正在连接服务器…", "", status_.connectionId + 1}; authenticate_ = false; Erase(password_); }
+      status_ = {"connecting", "正在连接服务器…", "", status_.connectionId + 1}; authenticate_ = false;
+      authMethod_ = AuthMethod::Password; Erase(password_); Erase(privateKey_); }
     LogState("connecting");
     worker_ = std::thread(&SshClient::Run, this, host, port);
     return true;
@@ -78,7 +93,21 @@ bool SshClient::Authenticate(const std::string &user, const std::string &passwor
     if (cancelled_ || status_.state != "verify" || authenticate_ || user.empty() || user.size() > 256 ||
         password.empty() || password.size() > 4096 || user.find('\0') != std::string::npos ||
         password.find('\0') != std::string::npos || fingerprint != status_.fingerprint) return false;
-    user_ = user; password_ = password; authenticate_ = true; return true;
+    user_ = user; password_ = password; authenticate_ = true; authMethod_ = AuthMethod::Password; return true;
+}
+bool SshClient::AuthenticateWithKey(const std::string &user, const std::string &privateKey,
+    const std::string &passphrase, const std::string &fingerprint) {
+    // The caller owns its buffers and must erase them; this method only erases its own copies.
+    // 64 KiB covers every supported OpenSSH/PEM key while bounding the copied buffer.
+    if (user.empty() || user.size() > 256 || user.find('\0') != std::string::npos ||
+        privateKey.empty() || privateKey.size() > 64 * 1024 || passphrase.size() > 4096 ||
+        passphrase.find('\0') != std::string::npos || fingerprint.empty()) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (cancelled_ || status_.state != "verify" || authenticate_ || fingerprint != status_.fingerprint) return false;
+    user_ = user; privateKey_ = privateKey; password_ = passphrase;
+    authenticate_ = true; authMethod_ = AuthMethod::PublicKey; return true;
 }
 void SshClient::Disconnect() { if (running_) LogState("cancelling"); cancelled_ = true; }
 bool SshClient::StartTransfer(bool upload, int fd, const std::string &remotePath, uint32_t connectionId) {
@@ -136,7 +165,7 @@ RemoteStatus SshClient::GetRemoteStatus() {
 
 void SshClient::Run(std::string host, int port) {
     int fd = -1; LIBSSH2_SESSION *session = nullptr;
-    std::string password;
+    std::string password, key;
     try {
         static const int initialized = libssh2_init(0);
         if (initialized != 0) throw std::runtime_error("SSH 初始化失败");
@@ -200,19 +229,39 @@ void SshClient::Run(std::string host, int port) {
         LogState("verify");
         deadline = Clock::now() + std::chrono::seconds(120);
         std::string user;
+        AuthMethod method = AuthMethod::Password;
         while (true) {
             check(deadline);
             { std::lock_guard<std::mutex> lock(mutex_);
-              if (authenticate_) { user = user_; password.swap(password_); authenticate_ = false; break; } }
+              if (authenticate_) {
+                  user = user_; password.swap(password_); key.swap(privateKey_);
+                  method = authMethod_; authenticate_ = false; break;
+              } }
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
-        Set("authenticating", "正在验证用户名和密码…");
-        rc = operation([&]() { return libssh2_userauth_password_ex(session, user.c_str(), user.size(), password.c_str(), password.size(), nullptr); });
-        Erase(password);
-        if (rc != 0) {
-            LogError("password-auth", rc);
-            throw std::runtime_error("密码认证失败（错误码 " + std::to_string(rc) + "）：请检查凭据及服务器是否启用密码登录");
+        if (method == AuthMethod::PublicKey) {
+            Set("authenticating", "正在验证私钥…");
+            // Passing no public key data makes libssh2 derive it from the private key.
+            rc = operation([&]() {
+                return libssh2_userauth_publickey_frommemory(session, user.c_str(), user.size(),
+                    nullptr, 0, key.c_str(), key.size(), password.empty() ? nullptr : password.c_str());
+            });
+            Erase(key);
+            Erase(password);
+            if (rc != 0) {
+                LogError("publickey-auth", rc);
+                throw std::runtime_error(KeyAuthMessage(rc));
+            }
+        } else {
+            Set("authenticating", "正在验证用户名和密码…");
+            rc = operation([&]() { return libssh2_userauth_password_ex(session, user.c_str(), user.size(), password.c_str(), password.size(), nullptr); });
+            Erase(password);
+            if (rc != 0) {
+                LogError("password-auth", rc);
+                throw std::runtime_error("密码认证失败（错误码 " + std::to_string(rc) + "）：请检查凭据及服务器是否启用密码登录");
+            }
         }
+        Erase(key);
         if (cancelled_) throw std::runtime_error("cancelled");
         Set("connected", "SSH 登录成功，连接已建立");
         libssh2_keepalive_config(session, 1, 10);
@@ -274,11 +323,12 @@ void SshClient::Run(std::string host, int port) {
         if (!cancelled_) Set("error", error.what());
     }
     Erase(password);
+    Erase(key);
     // Closing the transport first makes cleanup bounded even for an unresponsive peer.
     if (fd >= 0) shutdown(fd, SHUT_RDWR);
     if (session) libssh2_session_free(session);
     if (fd >= 0) close(fd);
-    { std::lock_guard<std::mutex> lock(mutex_); Erase(password_); authenticate_ = false;
+    { std::lock_guard<std::mutex> lock(mutex_); Erase(password_); Erase(privateKey_); authenticate_ = false;
       pendingTransfer_.reset();
       pendingRemote_.reset();
       if (remoteStatus_.state == "running") {

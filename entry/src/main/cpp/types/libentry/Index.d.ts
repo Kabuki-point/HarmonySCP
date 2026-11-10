@@ -13,6 +13,9 @@ export interface TransferStatus {
 }
 export const connect: (host: string, port: number) => boolean;
 export const authenticate: (user: string, password: string, fingerprint: string) => boolean;
+/** Supports OpenSSH and PEM private keys, encrypted or not. Empty passphrase means none.
+ *  The caller keeps ownership of keyData and should zero it after this returns. */
+export const authenticateWithKey: (user: string, keyData: ArrayBuffer, passphrase: string, fingerprint: string) => boolean;
 export const disconnect: () => void;
 export const status: () => SshStatus;
 /** Duplicates fd before returning. The caller retains ownership of the original. */

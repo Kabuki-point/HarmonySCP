@@ -3,6 +3,7 @@ import { RemoteStatus, SshStatus, TransferStatus } from 'libentry.so';
 const NativeMock: Record<string, Object> = {
   'connect': (host: string, port: number): boolean => false,
   'authenticate': (user: string, password: string, fingerprint: string): boolean => false,
+  'authenticateWithKey': (user: string, keyData: ArrayBuffer, passphrase: string, fingerprint: string): boolean => false,
   'disconnect': (): void => {},
   'startTransfer': (upload: boolean, fd: number, remotePath: string, connectionId: number): boolean => false,
   'cancelTransfer': (): void => {},

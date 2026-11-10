@@ -3,12 +3,20 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <unistd.h>
 
 void Require(bool ok, const char *message) { if (!ok) throw std::runtime_error(message); }
+
+std::string ReadFile(const std::string &path) {
+    std::ifstream input(path, std::ios::binary);
+    Require(input.good(), "Cannot open test key file");
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+}
 void Wait(SshClient &client, const std::string &state, int timeout = 5000) {
     auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout);
     while (std::chrono::steady_clock::now() < end) {
@@ -133,12 +141,18 @@ void TestSftp(SshClient &client) {
 
 int main(int argc, char **argv) {
     try {
-        Require(argc == 4, "port mode fingerprint required");
+        Require(argc >= 4, "port mode fingerprint required");
         int port = std::atoi(argv[1]); std::string mode = argv[2];
+        const bool keyMode = mode.rfind("pubkey", 0) == 0;
+        // The harness passes the key directory and passphrase for key scenarios only.
+        std::string keyDir = keyMode && argc >= 6 ? argv[4] : "";
+        std::string passphrase = keyMode && argc >= 6 ? argv[5] : "";
         SshClient client;
         Require(!client.Connect("example.com", port), "MVP must reject DNS names");
         Require(!client.Connect("127.0.0.1", 65536), "Invalid port accepted");
         Require(!client.Authenticate("tester", "secret", "fake"), "Auth before handshake accepted");
+        Require(!client.AuthenticateWithKey("tester", "key", "", "SHA256:fake"), "Key auth before handshake accepted");
+        Require(!client.AuthenticateWithKey("", "key", "", "SHA256:fake"), "Empty user accepted");
         Require(client.Connect("127.0.0.1", port), "Connect rejected");
         Require(!client.Connect("127.0.0.1", port), "Duplicate connection accepted");
         if (mode == "stall") {
@@ -148,10 +162,31 @@ int main(int argc, char **argv) {
         } else {
             Wait(client, "verify");
             Require(client.Status().fingerprint == argv[3], "Fingerprint does not match server");
-            Require(!client.Authenticate("tester", "secret", "SHA256:wrong"), "Wrong fingerprint accepted");
-            Require(client.Status().state == "verify", "Wrong fingerprint changed state");
+            if (keyMode) {
+                Require(!client.AuthenticateWithKey("tester", "key", "", "SHA256:wrong"), "Wrong fingerprint accepted for key");
+                Require(client.Status().state == "verify", "Wrong fingerprint changed state for key");
+                Require(!client.AuthenticateWithKey("tester", std::string(64 * 1024 + 1, 'k'), "", argv[3]),
+                    "Oversized key accepted");
+            } else {
+                Require(!client.Authenticate("tester", "secret", "SHA256:wrong"), "Wrong fingerprint accepted");
+                Require(client.Status().state == "verify", "Wrong fingerprint changed state");
+            }
             if (mode == "reject") {
                 client.Disconnect(); Wait(client, "idle", 1000);
+            } else if (keyMode) {
+                std::string keyPath = keyDir + "/id_rsa";
+                std::string keyPassphrase = "";
+                if (mode == "pubkey-wrong") keyPath = keyDir + "/id_other";
+                if (mode == "pubkey-encrypted") { keyPath = keyDir + "/id_encrypted"; keyPassphrase = passphrase; }
+                std::string material = ReadFile(keyPath);
+                Require(client.AuthenticateWithKey("tester", material, keyPassphrase, argv[3]), "Key auth rejected");
+                if (mode == "pubkey-wrong" || mode == "pubkey-password-only") {
+                    Wait(client, "error");
+                } else {
+                    Wait(client, "connected");
+                    client.Disconnect();
+                    Wait(client, "idle", 1000);
+                }
             } else {
                 Require(client.Authenticate("tester", mode == "bad" ? "wrong" : "secret", argv[3]), "Auth rejected");
                 if (mode == "bad") Wait(client, "error");

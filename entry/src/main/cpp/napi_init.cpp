@@ -41,6 +41,24 @@ static napi_value Authenticate(napi_env env, napi_callback_info info) {
     if (!password.empty()) { volatile char *p = &password[0]; for (size_t i = 0; i < password.size(); ++i) p[i] = 0; }
     return Bool(env, result);
 }
+// Copy key bytes out of ArkTS, hand them to the client, then wipe the copy whether
+// or not the request was accepted. The JS ArrayBuffer is released by its owner.
+static napi_value AuthenticateWithKey(napi_env env, napi_callback_info info) {
+    size_t count = 4; napi_value args[4]; napi_get_cb_info(env, info, &count, args, nullptr, nullptr);
+    std::string user, prompt, fingerprint, key;
+    bool valid = count == 4 && String(env, args[0], user, 256) && String(env, args[2], prompt, 4096) &&
+        String(env, args[3], fingerprint, 128);
+    void *data = nullptr; size_t length = 0;
+    if (valid && napi_get_arraybuffer_info(env, args[1], &data, &length) == napi_ok &&
+        data != nullptr && length > 0 && length <= 64 * 1024) {
+        key.assign(static_cast<const char *>(data), length);
+    }
+    valid = valid && !key.empty();
+    bool result = valid && client.AuthenticateWithKey(user, key, prompt, fingerprint);
+    if (!key.empty()) { volatile char *p = &key[0]; for (size_t i = 0; i < key.size(); ++i) p[i] = 0; }
+    if (!prompt.empty()) { volatile char *p = &prompt[0]; for (size_t i = 0; i < prompt.size(); ++i) p[i] = 0; }
+    return Bool(env, result);
+}
 static napi_value Disconnect(napi_env env, napi_callback_info info) { client.Disconnect(); napi_value value; napi_get_undefined(env, &value); return value; }
 static napi_value Status(napi_env env, napi_callback_info info) {
     auto status = client.Status(); napi_value result; napi_create_object(env, &result);
@@ -141,6 +159,7 @@ static napi_value Init(napi_env env, napi_value exports) {
     napi_property_descriptor desc[] = {
         {"connect", nullptr, Connect, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"authenticate", nullptr, Authenticate, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"authenticateWithKey", nullptr, AuthenticateWithKey, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"disconnect", nullptr, Disconnect, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"status", nullptr, Status, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"startTransfer", nullptr, StartTransfer, nullptr, nullptr, nullptr, napi_default, nullptr},
