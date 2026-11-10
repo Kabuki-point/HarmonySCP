@@ -1,6 +1,7 @@
 #include "napi/native_api.h"
 #include "ssh_client.h"
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <vector>
 
@@ -137,6 +138,47 @@ static napi_value GetRemoteStatus(napi_env env, napi_callback_info info) {
     return result;
 }
 
+static bool Dimension(napi_env env, napi_value value, int maximum, int &out) {
+    double number;
+    if (napi_get_value_double(env, value, &number) != napi_ok ||
+        !(number >= 0 && number <= maximum) || number != std::trunc(number)) return false;
+    out = static_cast<int>(number);
+    return true;
+}
+
+static napi_value TerminalCommand(napi_env env, napi_callback_info info) {
+    size_t count = 5;
+    napi_value args[5];
+    napi_get_cb_info(env, info, &count, args, nullptr, nullptr);
+    std::string action, data;
+    int cols, rows;
+    uint32_t connectionId;
+    if (count != 5 || !String(env, args[0], action, 6) || !String(env, args[1], data, 16384) ||
+        !Dimension(env, args[2], 500, cols) || !Dimension(env, args[3], 300, rows) ||
+        !ConnectionId(env, args[4], connectionId)) return Bool(env, false);
+    return Bool(env, client.TerminalCommand(action, data, cols, rows, connectionId));
+}
+
+static napi_value ReadTerminal(napi_env env, napi_callback_info info) {
+    size_t count = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &count, args, nullptr, nullptr);
+    uint32_t connectionId;
+    TerminalSnapshot snapshot;
+    if (count == 1 && ConnectionId(env, args[0], connectionId)) {
+        snapshot = client.ReadTerminal(connectionId);
+    }
+    napi_value result, output;
+    void *bytes;
+    if (napi_create_object(env, &result) != napi_ok ||
+        napi_create_arraybuffer(env, snapshot.output.size(), &bytes, &output) != napi_ok) return nullptr;
+    if (!snapshot.output.empty()) std::memcpy(bytes, snapshot.output.data(), snapshot.output.size());
+    SetString(env, result, "state", snapshot.state);
+    SetString(env, result, "message", snapshot.message);
+    napi_set_named_property(env, result, "output", output);
+    return result;
+}
+
 static napi_value Init(napi_env env, napi_value exports) {
     napi_property_descriptor desc[] = {
         {"connect", nullptr, Connect, nullptr, nullptr, nullptr, napi_default, nullptr},
@@ -147,7 +189,9 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"cancelTransfer", nullptr, CancelTransfer, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"transferStatus", nullptr, GetTransferStatus, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"startRemote", nullptr, StartRemote, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"remoteStatus", nullptr, GetRemoteStatus, nullptr, nullptr, nullptr, napi_default, nullptr}
+        {"remoteStatus", nullptr, GetRemoteStatus, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"terminalCommand", nullptr, TerminalCommand, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"readTerminal", nullptr, ReadTerminal, nullptr, nullptr, nullptr, napi_default, nullptr}
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc); return exports;
 }

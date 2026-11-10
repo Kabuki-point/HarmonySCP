@@ -34,3 +34,14 @@ export interface RemoteStatus {
 }
 export const startRemote: (action: string, path: string, newName: string, connectionId: number) => boolean;
 export const remoteStatus: () => RemoteStatus;
+
+export interface TerminalSnapshot {
+  state: string;
+  message: string;
+  output: ArrayBuffer;
+}
+/** Commands: open, resize, write and close. Unused arguments are empty or zero. */
+export const terminalCommand: (action: string, data: string, cols: number, rows: number,
+  connectionId: number) => boolean;
+/** Drains the queued bytes for this connection. */
+export const readTerminal: (connectionId: number) => TerminalSnapshot;

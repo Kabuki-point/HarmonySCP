@@ -68,6 +68,7 @@ bool SshClient::Connect(const std::string &host, int port) {
     if (worker_.joinable()) worker_.join();
     cancelled_ = false;
     { std::lock_guard<std::mutex> lock(mutex_);
+      terminal_ = TerminalState{};
       status_ = {"connecting", "正在连接服务器…", "", status_.connectionId + 1}; authenticate_ = false; Erase(password_); }
     LogState("connecting");
     worker_ = std::thread(&SshClient::Run, this, host, port);
@@ -89,7 +90,7 @@ bool SshClient::StartTransfer(bool upload, int fd, const std::string &remotePath
 
     std::lock_guard<std::mutex> lock(mutex_);
     if (cancelled_ || status_.state != "connected" || status_.connectionId != connectionId ||
-        transferStatus_.state == "running" || remoteStatus_.state == "running") return false;
+        transferStatus_.state == "running" || remoteStatus_.state == "running" || terminal_.active) return false;
     auto request = std::make_unique<TransferRequest>(upload, remotePath);
     request->fd = fcntl(fd, F_DUPFD_CLOEXEC, 0);
     if (request->fd < 0) return false;
@@ -123,7 +124,7 @@ bool SshClient::StartRemote(RemoteRequest request, uint32_t connectionId) {
     }
     std::lock_guard<std::mutex> lock(mutex_);
     if (cancelled_ || status_.state != "connected" || status_.connectionId != connectionId ||
-        transferStatus_.state == "running" || remoteStatus_.state == "running") return false;
+        transferStatus_.state == "running" || remoteStatus_.state == "running" || terminal_.active) return false;
     pendingRemote_ = std::make_unique<RemoteRequest>(std::move(request));
     remoteStatus_ = {"running", "", "", {}};
     return true;
@@ -217,12 +218,18 @@ void SshClient::Run(std::string host, int port) {
         Set("connected", "SSH 登录成功，连接已建立");
         libssh2_keepalive_config(session, 1, 10);
         while (!cancelled_) {
+            bool terminalActive;
             std::unique_ptr<TransferRequest> request;
             std::unique_ptr<RemoteRequest> remote;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
+                terminalActive = terminal_.active;
                 request = std::move(pendingTransfer_);
                 remote = std::move(pendingRemote_);
+            }
+            if (terminalActive) {
+                RunTerminal(session, fd, terminal_, mutex_, cancelled_);
+                continue;
             }
             if (remote) {
                 RemoteStatus result;
@@ -279,6 +286,11 @@ void SshClient::Run(std::string host, int port) {
     if (session) libssh2_session_free(session);
     if (fd >= 0) close(fd);
     { std::lock_guard<std::mutex> lock(mutex_); Erase(password_); authenticate_ = false;
+      if (terminal_.active) terminal_.snapshot.message = status_.message;
+      terminal_.active = false;
+      terminal_.close = true;
+      terminal_.snapshot.state = "closed";
+      Erase(terminal_.input);
       pendingTransfer_.reset();
       pendingRemote_.reset();
       if (remoteStatus_.state == "running") {
@@ -292,4 +304,48 @@ void SshClient::Run(std::string host, int port) {
       if (cancelled_) { status_.state = "idle"; status_.message = "连接已断开"; } }
     LogState(Status().state);
     running_ = false;
+}
+
+bool SshClient::TerminalCommand(const std::string &action, const std::string &data,
+    int cols, int rows, uint32_t connectionId) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (cancelled_ || status_.state != "connected" || status_.connectionId != connectionId) return false;
+
+    const bool validSize = cols >= 2 && cols <= 500 && rows >= 2 && rows <= 300;
+    if (action == "open") {
+        if (terminal_.active || transferStatus_.state == "running" || remoteStatus_.state == "running" ||
+            !validSize) return false;
+        terminal_ = TerminalState{};
+        terminal_.active = true;
+        terminal_.cols = cols;
+        terminal_.rows = rows;
+        terminal_.snapshot.state = "opening";
+        return true;
+    }
+    if (!terminal_.active) return false;
+    if (action == "close") {
+        terminal_.close = true;
+        terminal_.snapshot.state = "closing";
+        return true;
+    }
+    if (terminal_.close) return false;
+    if (action == "resize" && validSize) {
+        terminal_.cols = cols;
+        terminal_.rows = rows;
+        return true;
+    }
+    if (action == "write" && terminal_.snapshot.state == "open" &&
+        !data.empty() && data.size() <= 16384 && terminal_.input.size() + data.size() <= 65536) {
+        terminal_.input += data;
+        return true;
+    }
+    return false;
+}
+
+TerminalSnapshot SshClient::ReadTerminal(uint32_t connectionId) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (status_.connectionId != connectionId) return {"closed", "连接已更换", ""};
+    TerminalSnapshot result{terminal_.snapshot.state, terminal_.snapshot.message, ""};
+    result.output.swap(terminal_.snapshot.output);
+    return result;
 }

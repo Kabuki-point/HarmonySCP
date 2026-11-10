@@ -27,6 +27,7 @@
 ```sh
 clang++ -std=c++17 -pthread tests/native/ssh_client_test.cpp \
   entry/src/main/cpp/ssh_client.cpp entry/src/main/cpp/sftp_transfer.cpp \
+  entry/src/main/cpp/terminal_session.cpp \
   -Ientry/src/main/cpp -Ientry/libs/include \
   /tmp/harmony-libssh2-host/src/libssh2.a \
   -L/opt/homebrew/opt/openssl@3/lib -lcrypto -lz -o /tmp/harmony-ssh-client-test

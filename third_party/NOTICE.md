@@ -44,3 +44,10 @@ OpenSSL 3.5.4 为 Apache-2.0，完整文本来自源码包 `LICENSE.txt`，见 [
 ## SFTP 头文件（2026-11-04）
 
 `entry/libs/include/libssh2_sftp.h` 直接取自上表中已校验 SHA256 的官方 libssh2 1.11.1 源码包。文件 SHA256 为 `b5d864f19af69521278ed953b20b76a32cfdc08014da81d38f59964e7e2e2575`，保留原 BSD-3-Clause 许可证声明。此头文件共用于两种 ABI；`nm` 确认两份现有 `libssh2.a` 均提供所需的 SFTP 符号。静态库未替换，ARM64 归档的确切源码版本、补丁和构建过程仍待核实。
+
+## TermArk 终端组件
+
+- 来源：[leveleven/TermArk](https://gitcode.com/leveleven/TermArk)，源码提交 `cb8e05ed54b8d57e65af752fba84c0fe656c7215`，MIT 许可证见 [TermArk-LICENSE](TermArk-LICENSE)。
+- 引入终端组件、模型、VT 解析、字节工具及字形渲染源码。渲染器作为 `libtermatlas.so` 随工程从源码构建，目标 ABI 为 `arm64-v8a` 和 `x86_64`。本项目沿用 libssh2 和现有的指纹确认及认证逻辑。
+- 上游校验范围为该提交的 `entry/src/main/ets/{components,models,utils,ssh/SshBytes.ets}`、`entry/src/main/cpp` 和 `LICENSE`，按上述顺序用 `git archive` 输出的 tar 流 SHA256 为 `1f27aa82d64e10ef5271e8507c4ca672a26f92328e017e42415ae113f7961257`。该值对应上游源文件范围，包含未移植的同目录文件。Phone 输入和接入改动以本仓库为准。
+- 本次未构建或验收最终代码，未对上游实现进行完整安全审计。

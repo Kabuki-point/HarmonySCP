@@ -1,5 +1,6 @@
 import ssh from 'libentry.so';
 import { SftpPanel } from '../components/SftpPanel';
+import { TerminalPage } from './TerminalPage';
 
 @Entry
 @Component
@@ -13,6 +14,7 @@ struct Index {
   @State message: string = '填写服务器信息，开始安全连接';
   @State fingerprint: string = '';
   @State cancelling: boolean = false;
+  @State private terminalConnectionId: number = 0;
   private timer: number = -1;
   private lastNativeMessage: string = '';
 
@@ -29,6 +31,28 @@ struct Index {
 
   onPageHide(): void {
     this.cancel();
+  }
+
+  onBackPress(): boolean {
+    if (this.terminalConnectionId === 0) return false;
+    this.closeTerminal();
+    return true;
+  }
+
+  private openTerminal(): void {
+    const snapshot = ssh.status();
+    if (snapshot.state !== 'connected' || this.cancelling || this.terminalConnectionId !== 0) return;
+    if (!ssh.terminalCommand('open', '', 80, 24, snapshot.connectionId)) {
+      this.message = '终端暂不可用，请等待当前文件操作或终端关闭后重试';
+      return;
+    }
+    this.message = snapshot.message;
+    this.terminalConnectionId = snapshot.connectionId;
+  }
+
+  private closeTerminal(): void {
+    ssh.terminalCommand('close', '', 0, 0, this.terminalConnectionId);
+    this.terminalConnectionId = 0;
   }
 
   private refresh(): void {
@@ -103,7 +127,8 @@ struct Index {
       .width('100%').margin({ top: 18, bottom: 8 })
   }
 
-  build() {
+  @Builder
+  connectionView() {
     Scroll() {
       Column({ space: 0 }) {
         Row() {
@@ -179,6 +204,9 @@ struct Index {
               .onClick(() => this.cancel())
           }.padding(22).width('100%').backgroundColor(Color.White).borderRadius(20).margin({ top: 16 })
         }
+        if (this.state === 'connected' && !this.cancelling) {
+          Button('打开终端').width('100%').margin({ top: 16 }).onClick(() => this.openTerminal())
+        }
         if (this.nativeAvailable) {
           SftpPanel({ connected: this.state === 'connected' && !this.cancelling })
         }
@@ -186,5 +214,22 @@ struct Index {
           .fontSize(11).lineHeight(19).fontColor('#64748B').textAlign(TextAlign.Center).margin({ top: 24, bottom: 24 })
       }.width('100%').padding({ left: 20, right: 20, top: 28 })
     }.width('100%').height('100%').backgroundColor('#F8FAFC').align(Alignment.Top)
+  }
+
+  build() {
+    Stack() {
+      // Keep the file panel mounted so its current directory survives the terminal.
+      Column() {
+        this.connectionView()
+      }.width('100%').height('100%')
+        .visibility(this.terminalConnectionId === 0 ? Visibility.Visible : Visibility.None)
+
+      if (this.terminalConnectionId !== 0) {
+        TerminalPage({
+          connectionId: this.terminalConnectionId,
+          onReturn: () => this.closeTerminal()
+        })
+      }
+    }.width('100%').height('100%')
   }
 }

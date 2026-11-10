@@ -11,6 +11,7 @@
 - [x86_64 模拟器 SSH 功能验证](validation/emulator-ssh-validation.md)
 - [SSH GUI 脚本运行与 uv 环境](validation/ssh-gui-testing.md)
 - [SFTP 单文件传输验证](validation/sftp-validation.md)
+- [SSH 终端与 Phone 验证](validation/terminal-phone-validation.md)
 - [第三方依赖来源与许可证](../third_party/NOTICE.md)
 
 ## Agent 改动记录
@@ -34,4 +35,5 @@
 - [2026-11-05 / 01：SFTP 模拟器异常验收（进行中）](changes/2026-11-05-01-sftp-device-acceptance.md)
 - [2026-11-05 / 02：Windows x86_64 模拟器验证 SSH 与 SFTP（第一批）](changes/2026-11-05-02-windows-x86-emulator-validation.md)
 - [2026-11-05 / 03：按项目进展更新需求构思文档并排除 docx 产物入库](changes/2026-11-05-03-update-requirements-doc.md)
+- [2026-11-10 / 01：接入 SSH 终端和 Phone 输入](changes/2026-11-10-01-termark-phone.md)
 - [新改动记录模板](changes/TEMPLATE.md)

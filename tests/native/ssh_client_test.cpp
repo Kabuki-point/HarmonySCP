@@ -131,6 +131,59 @@ void TestSftp(SshClient &client) {
     RunRemote(client, RemoteAction::RemoveFile, "/work/已重命名.bin", "", "failed");
 }
 
+TerminalSnapshot WaitTerminal(SshClient &client, uint32_t connectionId, const std::string &state,
+    std::string &output, const std::string &expected = "") {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto snapshot = client.ReadTerminal(connectionId);
+        output += snapshot.output;
+        if (snapshot.state == state && output.find(expected) != std::string::npos) return snapshot;
+        if (snapshot.state == "closed") throw std::runtime_error("PTY closed early: " + snapshot.message);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    throw std::runtime_error("Timed out waiting for PTY state " + state);
+}
+
+void TestTerminal(SshClient &client) {
+    const auto id = client.Status().connectionId;
+    std::string output;
+    Require(!client.TerminalCommand("open", "", 80, 24, id - 1), "Stale PTY request accepted");
+    Require(!client.TerminalCommand("open", "", 1, 24, id), "Invalid PTY dimensions accepted");
+    Require(client.TerminalCommand("open", "", 42, 24, id), "PTY rejection scenario did not start");
+    Require(!WaitTerminal(client, id, "closed", output).message.empty(), "Missing PTY refusal message");
+    Wait(client, "connected");
+
+    Require(client.TerminalCommand("open", "", 80, 24, id), "PTY open rejected");
+    WaitTerminal(client, id, "open", output, "fixture-ready\r\n");
+    Require(!client.TerminalCommand("open", "", 80, 24, id), "Duplicate PTY accepted");
+    Require(!client.StartRemote({RemoteAction::List, ".", ""}, id), "SFTP accepted during PTY");
+    Require(!client.TerminalCommand("resize", "", 120, 301, id), "Invalid PTY resize accepted");
+    Require(client.TerminalCommand("resize", "", 120, 36, id), "PTY resize rejected");
+    const std::string input = u8"终端-echo\r";
+    Require(client.TerminalCommand("write", input, 0, 0, id), "PTY input rejected");
+    WaitTerminal(client, id, "open", output, input);
+    Require(client.TerminalCommand("write", "fixture-exit\r", 0, 0, id), "PTY EOF scenario rejected");
+    const std::string tail(40000, 'x');
+    Require(WaitTerminal(client, id, "closed", output, tail + "fixture-end").message.empty(),
+        "Unexpected PTY EOF error");
+    RunRemote(client, RemoteAction::List, ".");
+
+    output.clear();
+    Require(client.TerminalCommand("open", "", 80, 24, id), "PTY reopen rejected");
+    WaitTerminal(client, id, "open", output, "fixture-ready\r\n");
+    Require(client.TerminalCommand("close", "", 0, 0, id), "PTY close rejected");
+    WaitTerminal(client, id, "closed", output);
+    Require(!client.TerminalCommand("write", input, 0, 0, id), "Write accepted after PTY close");
+    RunRemote(client, RemoteAction::List, ".");
+
+    output.clear();
+    Require(client.TerminalCommand("open", "", 80, 24, id), "PTY disconnect scenario rejected");
+    WaitTerminal(client, id, "open", output, "fixture-ready\r\n");
+    client.Disconnect();
+    Wait(client, "idle", 1000);
+    WaitTerminal(client, id, "closed", output);
+}
+
 int main(int argc, char **argv) {
     try {
         Require(argc == 4, "port mode fingerprint required");
@@ -139,6 +192,8 @@ int main(int argc, char **argv) {
         Require(!client.Connect("example.com", port), "MVP must reject DNS names");
         Require(!client.Connect("127.0.0.1", 65536), "Invalid port accepted");
         Require(!client.Authenticate("tester", "secret", "fake"), "Auth before handshake accepted");
+        Require(!client.TerminalCommand("open", "", 80, 24, client.Status().connectionId),
+            "PTY opened before authentication");
         Require(client.Connect("127.0.0.1", port), "Connect rejected");
         Require(!client.Connect("127.0.0.1", port), "Duplicate connection accepted");
         if (mode == "stall") {
@@ -160,6 +215,7 @@ int main(int argc, char **argv) {
                     if (mode == "remote-close") Wait(client, "error");
                     else {
                         if (mode == "sftp") TestSftp(client);
+                        if (mode == "terminal") TestTerminal(client);
                         client.Disconnect();
                         Wait(client, "idle", 1000);
                     }

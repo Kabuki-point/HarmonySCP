@@ -1,5 +1,6 @@
 #pragma once
 #include "sftp_transfer.h"
+#include "terminal_session.h"
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -26,11 +27,14 @@ public:
     TransferStatus GetTransferStatus();
     bool StartRemote(RemoteRequest request, uint32_t connectionId);
     RemoteStatus GetRemoteStatus();
+    bool TerminalCommand(const std::string &action, const std::string &data, int cols, int rows, uint32_t connectionId);
+    TerminalSnapshot ReadTerminal(uint32_t connectionId);
 private:
     void Run(std::string host, int port);
     void Set(const std::string &state, const std::string &message);
     std::mutex mutex_;
     SshStatus status_;
+    TerminalState terminal_;
     TransferStatus transferStatus_;
     RemoteStatus remoteStatus_;
     std::unique_ptr<RemoteRequest> pendingRemote_;
