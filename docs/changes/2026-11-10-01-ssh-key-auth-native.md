@@ -2,11 +2,13 @@
 
 - 日期：2026-11-10（Asia/Shanghai）
 - 执行者：DSH agent（workbuddy/deepseek-v4.1-flash）
-- 关联：本地分支 `feature/ssh-key-auth`，基于 `c70fc0e`；未提交、未推送
+- 关联：分支 `feature/ssh-key-auth`，基于 `c70fc0e`；提交 `5326033`（Native 核心）、`be7ac90`（工具链修复后实测）
 
 ## 需求与目的
 
 `demand.md` 细节要求 1 为「SSH 实现公钥验证」。首版只有密码认证，本次增加基于私钥的认证能力。
+
+本记录覆盖两次提交：`5326033` 实现 Native 核心与接口（首次构建通过，但当时无法运行宿主机集成测试），`be7ac90` 修复宿主机工具链、实跑测试并修正测试脚手架缺陷。UI 层不在本批范围，见「后续事项」。
 
 经用户确认的范围取舍：
 
@@ -33,7 +35,7 @@
 - `entry/src/mock/Libentry.mock.ets`
   - 同步新增桩函数，恒返回 `false`，保持预览模式不伪造登录成功。
 - `tests/native/integration.py`
-  - Paramiko 服务端新增 `publickey` 模式与 `check_auth_publickey`，生成三把 RSA 测试密钥（授权、未授权、带口令）。
+  - Paramiko 服务端新增 `publickey` 模式与 `check_auth_publickey`，生成两把 RSA 测试密钥（授权用的 `client_key`、未授权用的 `other_key`），加密私钥由 `client_key` 带口令写出。
   - 新增 4 个场景：`pubkey-ok`、`pubkey-wrong`、`pubkey-encrypted`、`pubkey-password-only`，并断言认证尝试次数。
 - `tests/native/ssh_client_test.cpp`
   - 新增公钥模式分支与密钥文件读取；覆盖错误指纹拒绝、超大密钥拒绝、错误密钥失败、加密私钥成功、仅密码服务器拒绝公钥。
@@ -47,9 +49,9 @@
 
 ### 2026-11-10 补充：宿主机工具链修复后实跑
 
-同日修复了宿主机编译环境，`tests/native` 的 C++ 测试程序已实际编译并运行。
+同日修复了宿主机编译环境，`tests/native` 的 C++ 测试程序已实际编译并运行。以下结论覆盖上面「仅语法检查」阶段。
 
-环境：MSYS2（`C:\ProgrammingEnv\msys64`），`gcc 16.2.0`（msys 层，含完整 POSIX 头文件）、`libssh2 1.11.0`（含 `libssh2-devel`）、`openssl 3.3.1`。编译命令使用 `-std=gnu++17`（严格 `c++17` 会隐藏 `mkstemp`、`fdopen`、`F_DUPFD_CLOEXEC`，与项目 CMake 实际使用的 `gnu++17` 一致）。
+环境：MSYS2（`C:\ProgrammingEnv\msys64`），`gcc 16.2.0`（msys 层，含完整 POSIX 头文件）、`libssh2 1.11.0`（含 `libssh2-devel`）、`openssl 3.3.1`。编译命令使用 `-std=gnu++17`（严格 `c++17` 会隐藏 `mkstemp`、`fdopen`、`F_DUPFD_CLOEXEC`，与项目 CMake 实际使用的 `gnu++17` 一致）。完整复现步骤见 [原生构建说明](../validation/native-dependencies.md)。
 
 ```
 results: 10/10 场景通过
@@ -65,7 +67,7 @@ SFTP 场景在本机因 Windows 无 `SeCreateSymbolicLinkPrivilege` 无法创建
 2. **OpenSSH 新格式解析** —— **成立**。用 `ssh-keygen` 生成 `-----BEGIN OPENSSH PRIVATE KEY-----` 的 Ed25519 与 RSA 私钥，经 libssh2 认证均返回 `rc=0`（accepted）。
 3. **错误码映射** —— **成立**。加密私钥口令错误时返回 `-16`（`LIBSSH2_ERROR_FILE`），服务端拒绝已授权密钥时返回 `-18`（`LIBSSH2_ERROR_AUTHENTICATION_FAILED`），与 `KeyAuthMessage` 的映射一致。
 
-**测试过程中修正的两处测试代码缺陷**（非产品缺陷）：
+**测试过程中修正的三处测试代码缺陷**（非产品缺陷）：
 
 - `integration.py` 原用独立生成的 `encrypted_key` 做加密场景，但服务端只授权 `client_key`，导致必然失败；改为用已授权的 `client_key` 生成加密版本。
 - Paramiko 的 `get_allowed_auths` 仅影响通告的方法而不强制限制，`check_auth_publickey` 仍会被调用并可能返回成功；改为在 `check_auth_publickey` 内根据 `auth_mode` 显式拒绝，`pubkey-password-only` 才真正验证「服务器不支持公钥」。
