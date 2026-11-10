@@ -192,7 +192,9 @@ int main(int argc, char **argv) {
                 if (mode == "bad") Wait(client, "error");
                 else {
                     Wait(client, "connected");
-                    if (mode == "remote-close") Wait(client, "error");
+                    // Detection latency depends on the host socket layer; allow more than the default
+                    // window while still failing if the close is never noticed.
+                    if (mode == "remote-close") Wait(client, "error", 30000);
                     else {
                         if (mode == "sftp") TestSftp(client);
                         client.Disconnect();

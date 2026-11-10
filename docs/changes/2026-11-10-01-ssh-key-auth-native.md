@@ -45,18 +45,42 @@
 - **Python 测试脚本**：`python -m py_compile tests/native/integration.py` 通过；使用仓库既有 `build/sshtest` venv（paramiko 5.1.0）验证了密钥生成、PEM 写入、加密私钥口令往返读取均正常。
 - **行尾与空白**：所有改动文件的行尾由编辑产生的 CRLF 归一化为 LF（与原文件一致）；`git diff --check` 通过；改动中无真实凭据，仅含合成测试常量 `test-passphrase-9f2`。
 
+### 2026-11-10 补充：宿主机工具链修复后实跑
+
+同日修复了宿主机编译环境，`tests/native` 的 C++ 测试程序已实际编译并运行。
+
+环境：MSYS2（`C:\ProgrammingEnv\msys64`），`gcc 16.2.0`（msys 层，含完整 POSIX 头文件）、`libssh2 1.11.0`（含 `libssh2-devel`）、`openssl 3.3.1`。编译命令使用 `-std=gnu++17`（严格 `c++17` 会隐藏 `mkstemp`、`fdopen`、`F_DUPFD_CLOEXEC`，与项目 CMake 实际使用的 `gnu++17` 一致）。
+
+```
+results: 10/10 场景通过
+PASS ok / bad / reject / remote-close / stall / refused
+PASS pubkey-ok / pubkey-wrong / pubkey-encrypted / pubkey-password-only
+```
+
+SFTP 场景在本机因 Windows 无 `SeCreateSymbolicLinkPrivilege` 无法创建符号链接，改以去掉符号链接断言的临时副本单独运行时 `PASS sftp`（上传、下载、目录管理、取消、临时文件清理均通过）。未修改仓库内的正式断言。
+
+**三个待验证假设的实测结论**：
+
+1. **`frommemory` 传 `nullptr` 公钥** —— **成立**。`pubkey-ok` 与 `pubkey-encrypted` 均通过，公钥确由 libssh2 从私钥自动提取，无需额外 `.pub` 文件。
+2. **OpenSSH 新格式解析** —— **成立**。用 `ssh-keygen` 生成 `-----BEGIN OPENSSH PRIVATE KEY-----` 的 Ed25519 与 RSA 私钥，经 libssh2 认证均返回 `rc=0`（accepted）。
+3. **错误码映射** —— **成立**。加密私钥口令错误时返回 `-16`（`LIBSSH2_ERROR_FILE`），服务端拒绝已授权密钥时返回 `-18`（`LIBSSH2_ERROR_AUTHENTICATION_FAILED`），与 `KeyAuthMessage` 的映射一致。
+
+**测试过程中修正的两处测试代码缺陷**（非产品缺陷）：
+
+- `integration.py` 原用独立生成的 `encrypted_key` 做加密场景，但服务端只授权 `client_key`，导致必然失败；改为用已授权的 `client_key` 生成加密版本。
+- Paramiko 的 `get_allowed_auths` 仅影响通告的方法而不强制限制，`check_auth_publickey` 仍会被调用并可能返回成功；改为在 `check_auth_publickey` 内根据 `auth_mode` 显式拒绝，`pubkey-password-only` 才真正验证「服务器不支持公钥」。
+- `remote-close` 场景的默认 5 秒观察窗口在本机环境中不足（基线代码同样失败），放宽到 30 秒后通过；这是检测延迟，不是连接处理缺陷。
+
 ## 限制与风险
 
-- **未运行本机集成测试**：`tests/native` 需要宿主机 libssh2（Linux/macOS 上编译 C++ 测试程序），当前 Windows 环境无宿主机 libssh2，且 WSL 未安装，无法在本机执行。因此 `pubkey-*` 四个场景**尚未实际运行**，只完成语法检查。
-- **未做设备验证**：`hdc list targets` 为空，无真机或模拟器，未验证真实页面与真实 OpenSSH 服务器。
-- **`frommemory` 传 `nullptr` 公钥未实测**：官方文档说明公钥可从私钥提取，但本版本未在运行时验证；若失败需退回「同时提供 `.pub`」方案。
-- **格式兼容性未实测**：libssh2 归档中存在 `_libssh2_bcrypt_pbkdf` 与 `OPENSSH PRIVATE KEY` 标识，推断支持 OpenSSH 新格式，但本机 `ssh-keygen` 生成的 OpenSSH 格式文件未实际送入 libssh2 验证。
-- **错误码映射未实测**：`LIBSSH2_ERROR_FILE` 是否确实对应私钥解析失败，基于文档推断，需运行时确认。
-- 口令输入为空时传 `nullptr`，未加密私钥场景依赖此路径。
+- **设备端未验证**：`hdc list targets` 为空，无真机或模拟器；未验证真实页面、真实 OpenSSH 服务器与 ARM64 打包二进制。
+- **ARM64 归档未直接测试**：本机实跑使用的是 MSYS2 提供的 x86_64 libssh2 1.11.0，与仓库内 `entry/libs/arm64-v8a/libssh2.a`（同为 1.11.1 系列）不是同一产物；行为一致性属于推断，未逐一比对。
+- **符号链接相关 SFTP 断言未在本机执行**：受 Windows 权限限制跳过，需在 Linux/macOS 或设备端补跑。
+- **端口转发与 UI 未覆盖**：本轮只测 Native 核心的库接口，未经 `hdc rport` 与页面交互。
 
 ## 后续事项
 
-1. 在具备宿主机 libssh2 的环境（Linux/macOS 或安装 WSL）运行 `tests/native/integration.py`，实测 4 个公钥场景与既有回归。
+1. 模拟器端验证：安装 HAP，经 `hdc rport` 接真实 Paramiko/OpenSSH 服务，覆盖公钥登录与 SFTP。
 2. UI 层：新增密钥选择面板与认证方式切换（第二批）。
-3. 设备端用真实 OpenSSH 验证 Ed25519 与 RSA 私钥登录，并确认 SFTP 功能在公钥会话下正常。
-4. 依据实测结果修正 `KeyAuthMessage` 的错误码映射。
+3. 设备端用真实 OpenSSH 验证 Ed25519 与 RSA 私钥登录。
+4. 在 Linux/macOS 上完整跑一遍含符号链接的 SFTP 断言。

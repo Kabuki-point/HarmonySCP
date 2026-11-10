@@ -24,7 +24,6 @@ fingerprint = 'SHA256:' + base64.b64encode(hashlib.sha256(key.asbytes()).digest(
 # as OpenSSH files inside a temporary directory that is removed after the run.
 client_key = paramiko.RSAKey.generate(2048)
 other_key = paramiko.RSAKey.generate(2048)
-encrypted_key = paramiko.RSAKey.generate(2048)
 CLIENT_PASSPHRASE = 'test-passphrase-9f2'
 client_pubkey = client_key.get_name() + ' ' + client_key.get_base64()
 
@@ -45,6 +44,10 @@ class Server(paramiko.ServerInterface):
         return paramiko.AUTH_SUCCESSFUL if (username, password) == ('tester', 'secret') else paramiko.AUTH_FAILED
     def check_auth_publickey(self, username, server_key):
         self.key_attempts += 1
+        # Paramiko calls this even when only password is advertised, so enforce the
+        # advertised method here; otherwise a key-only client would wrongly succeed.
+        if self.auth_mode == 'password':
+            return paramiko.AUTH_FAILED
         if username != 'tester':
             return paramiko.AUTH_FAILED
         return paramiko.AUTH_SUCCESSFUL if server_key.asbytes() == client_key.asbytes() else paramiko.AUTH_FAILED
@@ -168,14 +171,23 @@ for mode in ('ok', 'bad', 'reject', 'remote-close', 'stall', 'refused', 'sftp',
         client_key.write_private_key_file(str(directory / 'id_rsa'))
         (directory / 'id_rsa.pub').write_text(client_pubkey + '\n', encoding='utf-8')
         other_key.write_private_key_file(str(directory / 'id_other'))
-        encrypted_key.write_private_key_file(str(directory / 'id_encrypted'), password=CLIENT_PASSPHRASE)
+        # The encrypted variant must be the same authorised key, so the passphrase path is what
+        # is under test rather than the authorisation list.
+        client_key.write_private_key_file(str(directory / 'id_encrypted'), password=CLIENT_PASSPHRASE)
     if temporary:
         root = Path(temporary.name)
         work = root / 'work'
         work.mkdir()
         (work / 'keep.txt').write_bytes(b'keep')
-        (work / 'link').symlink_to('keep.txt')
         (root / 'large.bin').write_bytes(b'x' * (2 * 1024 * 1024))
+        # Creating a symlink needs SeCreateSymbolicLinkPrivilege or Developer Mode on Windows;
+        # skip this mode with a clear message instead of failing the whole run.
+        try:
+            (work / 'link').symlink_to('keep.txt')
+        except (OSError, NotImplementedError):
+            temporary.cleanup()
+            print('SKIP sftp: symlink creation is not permitted on this host')
+            continue
     def serve():
         transport = None
         connection = None
@@ -219,9 +231,9 @@ for mode in ('ok', 'bad', 'reject', 'remote-close', 'stall', 'refused', 'sftp',
         elif mode == 'pubkey-wrong':
             assert server.key_attempts == 1, 'Unexpected key attempt count'
         elif mode == 'pubkey-password-only':
-            # The server advertises password only, so the key attempt is refused without reaching the
-            # key check and no password is ever offered by a key-only client.
-            assert server.key_attempts == 0 and server.attempts == 0, 'Unexpected attempt on password-only server'
+            # The server advertises password only; the key attempt is refused and no
+            # password is offered by a key-only client.
+            assert server.key_attempts >= 1 and server.attempts == 0, 'Unexpected attempt on password-only server'
         if mode == 'sftp':
             expected = bytes(i % 251 for i in range(180000))
             assert (root / '文件 with spaces.bin').read_bytes() == expected

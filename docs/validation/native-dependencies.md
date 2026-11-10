@@ -26,3 +26,29 @@ hdc shell aa start -a EntryAbility -b com.example.har_scp
 ```
 
 多设备连接时先用 `hdc -t <target>` 指定目标。模拟器能安装、启动不代表 SSH 登录通过；真实网络登录、主机指纹确认、认证、取消及断开仍按 [MVP 清单](mvp-validation.md) 验收。ARM64 真机也须单独回归。
+
+## 宿主机集成测试环境（Windows / MSYS2）
+
+`tests/native/` 的 C++ 测试程序需要宿主机 libssh2 与 **POSIX 头文件**。Windows 上不可使用纯 MinGW 工具链（缺少 `arpa/inet.h`、`sys/socket.h`、`poll.h`），应使用 MSYS2 的 msys 层工具链。
+
+```sh
+# MSYS2 环境（示例安装路径 C:\\ProgrammingEnv\\msys64）
+pacman -Sy
+pacman -S --needed gcc libssh2-devel
+```
+
+编译与运行（`-std=gnu++17` 必需，严格 `c++17` 会隐藏 `mkstemp`、`fdopen`、`F_DUPFD_CLOEXEC`）：
+
+```sh
+g++ -std=gnu++17 -pthread \
+  tests/native/ssh_client_test.cpp entry/src/main/cpp/ssh_client.cpp entry/src/main/cpp/sftp_transfer.cpp \
+  -Ientry/src/main/cpp -I/usr/include -L/usr/lib -lssh2 -lcrypto -lz -o build/host/ssh_client_test.exe
+
+.venv/Scripts/python.exe tests/native/integration.py build/host/ssh_client_test.exe
+```
+
+Windows 主机上的已知限制：
+
+- 创建符号链接需要 `SeCreateSymbolicLinkPrivilege` 或开启开发者模式；未满足时测试脚本会跳过 `sftp` 场景并打印 `SKIP sftp`。
+- `/tmp` 不存在，测试程序的本地临时文件路径需指向存在的目录。
+- `remote-close` 场景在部分主机的关闭检测较慢，测试把观察窗口放宽到 30 秒。
