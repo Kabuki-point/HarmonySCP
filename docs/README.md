@@ -35,4 +35,5 @@
 - [2026-11-05 / 02：Windows x86_64 模拟器验证 SSH 与 SFTP（第一批）](changes/2026-11-05-02-windows-x86-emulator-validation.md)
 - [2026-11-05 / 03：按项目进展更新需求构思文档并排除 docx 产物入库](changes/2026-11-05-03-update-requirements-doc.md)
 - [2026-11-10 / 01：SSH 公钥认证（第一批：Native 核心与接口）](changes/2026-11-10-01-ssh-key-auth-native.md)
+- [2026-11-12 / 01：公钥认证设备端验证尝试与阻塞](changes/2026-11-12-01-emulator-key-auth-attempt.md)
 - [新改动记录模板](changes/TEMPLATE.md)
